@@ -53,6 +53,15 @@ public class SaveDataPointFunctionTests
         Assert.Same(SaveDataPointOutcome.SaveFailed, outcome);
     }
 
+    [Fact]
+    public async Task HandleAsync_RethrowsCancellation_WhenSaveIsCancelled()
+    {
+        var function = CreateFunction(_ => throw new OperationCanceledException());
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            function.HandleAsync(CreateValidRequest(), CancellationToken.None));
+    }
+
     private static TestableSaveDataPointFunction CreateFunction(
         Func<SaveDataPointRequest, Task> saveAsync,
         string? connectionString = "Server=test;Database=ReMind;Encrypt=False;")

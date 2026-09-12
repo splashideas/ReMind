@@ -51,6 +51,10 @@ public class SaveDataPointFunction
         {
             await SaveDataPointAsync(payload, cancellationToken);
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (Exception)
         {
             return SaveDataPointOutcome.SaveFailed;

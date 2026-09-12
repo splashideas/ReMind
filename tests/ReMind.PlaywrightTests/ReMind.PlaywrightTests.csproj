@@ -25,8 +25,4 @@
     <ProjectReference Include="..\..\src\ReMind.Frontend\ReMind.Frontend.csproj" />
   </ItemGroup>
 
-  <Target Name="InstallPlaywrightBrowsers" AfterTargets="Build">
-    <Exec Command="pwsh &quot;$(TargetDir)playwright.ps1&quot; install chromium" />
-  </Target>
-
 </Project>

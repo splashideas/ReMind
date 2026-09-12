@@ -119,16 +119,16 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
 
         _playwright?.Dispose();
 
-        if (_frontendProcess is not null && !_frontendProcess.HasExited)
-        {
-            _frontendProcess.Kill(entireProcessTree: true);
-            await _frontendProcess.WaitForExitAsync();
-        }
-
         if (_backendHost is not null)
         {
             await _backendHost.StopAsync();
             _backendHost.Dispose();
+        }
+
+        if (_frontendProcess is not null && !_frontendProcess.HasExited)
+        {
+            _frontendProcess.Kill(entireProcessTree: true);
+            await _frontendProcess.WaitForExitAsync();
         }
 
         if (_databasePath is not null && File.Exists(_databasePath))
