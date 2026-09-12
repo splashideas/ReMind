@@ -90,6 +90,7 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
         var fixtureSuffix = Guid.NewGuid().ToString("N");
         var sqlContainerName = $"remind-playwright-sql-{fixtureSuffix}";
         var azuriteContainerName = $"remind-playwright-azurite-{fixtureSuffix}";
+        var databaseName = $"ReMindPlaywright_{fixtureSuffix}";
         var localFunctionKey = CreateLocalKey();
 
         _functionsSecretsPath = Path.Join(Path.GetTempPath(), $"remind-playwright-secrets-{fixtureSuffix}");
@@ -122,10 +123,10 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
         var azuriteQueuePort = await GetPublishedPortAsync(_azuriteContainerId, 10001);
         var azuriteTablePort = await GetPublishedPortAsync(_azuriteContainerId, 10002);
 
-        DatabaseConnectionString = BuildSqlConnectionString(sqlPort, "ReMindPlaywright");
+        DatabaseConnectionString = BuildSqlConnectionString(sqlPort, databaseName);
 
         await WaitForSqlServerAsync(BuildSqlConnectionString(sqlPort, "master"));
-        await CreateDatabaseAsync(DatabaseConnectionString, repoRoot);
+        await CreateDatabaseAsync(DatabaseConnectionString, databaseName, repoRoot);
 
         var storageConnectionString =
             "DefaultEndpointsProtocol=http;" +
@@ -187,7 +188,7 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
             ConnectTimeout = 1
         }.ConnectionString;
 
-    private static async Task CreateDatabaseAsync(string connectionString, string repoRoot)
+    private static async Task CreateDatabaseAsync(string connectionString, string databaseName, string repoRoot)
     {
         var masterConnectionString = new SqlConnectionStringBuilder(connectionString)
         {
@@ -198,12 +199,12 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
         {
             await masterConnection.OpenAsync();
             await using var createDb = masterConnection.CreateCommand();
-            createDb.CommandText = """
-                                   IF DB_ID(N'ReMindPlaywright') IS NULL
-                                   BEGIN
-                                       CREATE DATABASE [ReMindPlaywright];
-                                   END
-                                   """;
+            createDb.CommandText = $"""
+                                    IF DB_ID(N'{databaseName}') IS NULL
+                                    BEGIN
+                                        CREATE DATABASE [{databaseName}];
+                                    END
+                                    """;
             await createDb.ExecuteNonQueryAsync();
         }
 
@@ -223,44 +224,13 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
         string storageConnectionString,
         string functionsSecretsPath)
     {
-        Exception? lastPortBindingException = null;
-
-        for (var attempt = 0; attempt < 5; attempt++)
-        {
-            using var portReservation = ReserveLoopbackPort();
-
-            try
-            {
-                return await StartFunctionsAsync(
-                    repoRoot,
-                    ((IPEndPoint)portReservation.LocalEndpoint).Port,
-                    sqlConnectionString,
-                    storageConnectionString,
-                    functionsSecretsPath,
-                    portReservation);
-            }
-            catch (Exception ex) when (attempt < 4 && IsPortBindingFailure(ex))
-            {
-                lastPortBindingException = ex;
-            }
-        }
-
-        throw new InvalidOperationException("Failed to acquire a usable Functions host port.", lastPortBindingException);
-    }
-
-    private static async Task<(Process Process, string BaseUrl)> StartFunctionsAsync(
-        string repoRoot,
-        int port,
-        string sqlConnectionString,
-        string storageConnectionString,
-        string functionsSecretsPath,
-        TcpListener portReservation)
-    {
         EnsureCommandAvailable("func", "Azure Functions Core Tools (func) is required to run the Playwright save workflow tests.");
 
         var projectPath = Path.Join(repoRoot, "src", "ReMind.Functions");
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var output = new StringBuilder();
+        using var portReservation = ReserveLoopbackPort();
+        var port = ((IPEndPoint)portReservation.LocalEndpoint).Port;
         var startInfo = new ProcessStartInfo("func", $"start --enableAuth --port {port}")
         {
             WorkingDirectory = projectPath,
@@ -580,8 +550,28 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
                 RedirectStandardError = true,
                 RedirectStandardOutput = true
             });
-            process?.WaitForExit(5000);
-            if (process is null || process.ExitCode != 0)
+            var exited = process?.WaitForExit(5000) ?? false;
+            if (process is null || !exited)
+            {
+                if (process is not null)
+                {
+                    try
+                    {
+                        if (!process.HasExited)
+                        {
+                            process.Kill(entireProcessTree: true);
+                        }
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // Process already exited.
+                    }
+                }
+
+                throw new InvalidOperationException(message);
+            }
+
+            if (process.ExitCode != 0)
             {
                 throw new InvalidOperationException(message);
             }
@@ -628,13 +618,6 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
 
         File.WriteAllText(Path.Join(secretsPath, "host.json"), hostSecrets);
         File.WriteAllText(Path.Join(secretsPath, "SaveDataPoint.json"), functionSecrets);
-    }
-
-    private static bool IsPortBindingFailure(Exception exception)
-    {
-        var message = exception.ToString();
-        return message.Contains("Address already in use", StringComparison.OrdinalIgnoreCase)
-            || message.Contains("Failed to bind to address", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string CreateLocalKey() => Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
