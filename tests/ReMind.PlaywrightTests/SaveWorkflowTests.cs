@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Net;
-using System.Net.Sockets;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -92,8 +91,6 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        var backendPort = GetFreePort();
-        var frontendPort = GetFreePort();
         _databasePath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.db");
         DatabaseConnectionString = new SqliteConnectionStringBuilder
         {
@@ -101,9 +98,9 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
         }.ToString();
 
         await CreateDatabaseAsync(DatabaseConnectionString);
-        _backendHost = await StartBackendAsync(backendPort, DatabaseConnectionString);
-        FrontendBaseUrl = $"http://127.0.0.1:{frontendPort}";
-        _frontendProcess = StartFrontend(frontendPort, backendPort);
+        (_backendHost, var backendBaseUrl) = await StartBackendAsync(DatabaseConnectionString);
+        (_frontendProcess, var frontendBaseUrl) = await StartFrontendAsync(backendBaseUrl);
+        FrontendBaseUrl = frontendBaseUrl;
         await WaitForUrlAsync(FrontendBaseUrl);
 
         _playwright = await Playwright.CreateAsync();
@@ -158,10 +155,10 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
         await command.ExecuteNonQueryAsync();
     }
 
-    private static async Task<IHost> StartBackendAsync(int backendPort, string connectionString)
+    private static async Task<(IHost Host, string BaseUrl)> StartBackendAsync(string connectionString)
     {
         var builder = WebApplication.CreateSlimBuilder();
-        builder.WebHost.UseUrls($"http://127.0.0.1:{backendPort}");
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
 
         var app = builder.Build();
         app.MapPost("/api/datapoints", async (HttpContext context) =>
@@ -196,12 +193,13 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
         });
 
         await app.StartAsync();
-        return app;
+        return (app, app.Urls.Single(url => url.StartsWith("http://127.0.0.1:", StringComparison.Ordinal)).TrimEnd('/'));
     }
 
-    private static Process StartFrontend(int frontendPort, int backendPort)
+    private static async Task<(Process Process, string BaseUrl)> StartFrontendAsync(string backendBaseUrl)
     {
         var projectPath = GetFrontendProjectPath();
+        var started = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         var startInfo = new ProcessStartInfo(
             "dotnet",
             $"run --no-build --no-launch-profile --project \"{projectPath}\"")
@@ -212,16 +210,52 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
             RedirectStandardOutput = true
         };
 
-        startInfo.Environment["ASPNETCORE_URLS"] = $"http://127.0.0.1:{frontendPort}";
+        startInfo.Environment["ASPNETCORE_URLS"] = "http://127.0.0.1:0";
         startInfo.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
-        startInfo.Environment["SaveDataPointFunctionUrl"] = $"http://127.0.0.1:{backendPort}/api/datapoints";
+        startInfo.Environment["SaveDataPointFunctionUrl"] = $"{backendBaseUrl}/api/datapoints";
 
-        var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start frontend process.");
-        process.OutputDataReceived += (_, _) => { };
+        var process = new Process
+        {
+            StartInfo = startInfo,
+            EnableRaisingEvents = true
+        };
+        process.Exited += (_, _) =>
+        {
+            started.TrySetException(new InvalidOperationException("Frontend process exited before startup completed."));
+        };
+        process.OutputDataReceived += (_, args) =>
+        {
+            if (args.Data is null)
+            {
+                return;
+            }
+
+            const string prefix = "Now listening on:";
+            var index = args.Data.IndexOf(prefix, StringComparison.Ordinal);
+            if (index < 0)
+            {
+                return;
+            }
+
+            var url = args.Data[(index + prefix.Length)..].Trim().TrimEnd('/');
+            if (url.Length > 0)
+            {
+                started.TrySetResult(url);
+            }
+        };
         process.ErrorDataReceived += (_, _) => { };
+        if (!process.Start())
+        {
+            throw new InvalidOperationException("Failed to start frontend process.");
+        }
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
-        return process;
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var registration = timeout.Token.Register(() => started.TrySetCanceled(timeout.Token));
+        var frontendBaseUrl = await started.Task;
+
+        return (process, frontendBaseUrl);
     }
 
     private static async Task WaitForUrlAsync(string url)
@@ -263,15 +297,5 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
 
         throw new DirectoryNotFoundException("Could not locate repository root.");
     }
-
-    private static int GetFreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
-    }
-
     private sealed record SaveRequest(string Location, string EventDate, string Description);
 }
