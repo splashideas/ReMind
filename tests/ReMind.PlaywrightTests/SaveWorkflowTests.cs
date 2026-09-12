@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Data.SqlClient;
 using Microsoft.Playwright;
@@ -72,8 +73,6 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
     private const string SqlImage = "mcr.microsoft.com/mssql/server:2022-latest";
     private const string AzuriteImage = "mcr.microsoft.com/azure-storage/azurite:latest";
     private const string SqlSaPassword = "ReMind_Test_Password_123";
-    private const string LocalFunctionKey = "remind-playwright-local-function-key";
-
     private Process? _functionsProcess;
     private Process? _frontendProcess;
     private IPlaywright? _playwright;
@@ -91,8 +90,10 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
         var fixtureSuffix = Guid.NewGuid().ToString("N");
         var sqlContainerName = $"remind-playwright-sql-{fixtureSuffix}";
         var azuriteContainerName = $"remind-playwright-azurite-{fixtureSuffix}";
+        var localFunctionKey = CreateLocalKey();
+
         _functionsSecretsPath = Path.Join(Path.GetTempPath(), $"remind-playwright-secrets-{fixtureSuffix}");
-        CreateFunctionsSecrets(_functionsSecretsPath, LocalFunctionKey);
+        CreateFunctionsSecrets(_functionsSecretsPath, localFunctionKey, CreateLocalKey());
 
         _sqlContainerId = await StartContainerAsync(
             sqlContainerName,
@@ -142,7 +143,7 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
 
         (_frontendProcess, var frontendBaseUrl) = await StartFrontendAsync(
             repoRoot,
-            $"{functionsBaseUrl}/api/datapoints?code={LocalFunctionKey}");
+            $"{functionsBaseUrl}/api/datapoints?code={localFunctionKey}");
         FrontendBaseUrl = frontendBaseUrl;
         await WaitForUrlAsync(FrontendBaseUrl);
 
@@ -226,14 +227,17 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
 
         for (var attempt = 0; attempt < 5; attempt++)
         {
+            using var portReservation = ReserveLoopbackPort();
+
             try
             {
                 return await StartFunctionsAsync(
                     repoRoot,
-                    GetFreePort(),
+                    ((IPEndPoint)portReservation.LocalEndpoint).Port,
                     sqlConnectionString,
                     storageConnectionString,
-                    functionsSecretsPath);
+                    functionsSecretsPath,
+                    portReservation);
             }
             catch (Exception ex) when (attempt < 4 && IsPortBindingFailure(ex))
             {
@@ -249,7 +253,8 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
         int port,
         string sqlConnectionString,
         string storageConnectionString,
-        string functionsSecretsPath)
+        string functionsSecretsPath,
+        TcpListener portReservation)
     {
         EnsureCommandAvailable("func", "Azure Functions Core Tools (func) is required to run the Playwright save workflow tests.");
 
@@ -315,6 +320,8 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
 
         try
         {
+            portReservation.Stop();
+
             if (!process.Start())
             {
                 throw new InvalidOperationException("Failed to start Functions process.");
@@ -585,11 +592,9 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
         }
     }
 
-    private static void CreateFunctionsSecrets(string secretsPath, string functionKey)
+    private static void CreateFunctionsSecrets(string secretsPath, string functionKey, string masterKey)
     {
         Directory.CreateDirectory(secretsPath);
-
-        const string masterKey = "remind-playwright-local-master-key";
 
         var hostSecrets = $$"""
                             {
@@ -632,18 +637,13 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
             || message.Contains("Failed to bind to address", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static int GetFreePort()
+    private static string CreateLocalKey() => Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+
+    private static TcpListener ReserveLoopbackPort()
     {
-        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
-        try
-        {
-            return ((IPEndPoint)listener.LocalEndpoint).Port;
-        }
-        finally
-        {
-            listener.Stop();
-        }
+        return listener;
     }
 
     private static string GetBuildConfiguration()
