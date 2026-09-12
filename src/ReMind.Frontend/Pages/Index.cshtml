@@ -1,0 +1,41 @@
+@page
+@model IndexModel
+@{
+    ViewData["Title"] = "ReMind";
+}
+
+<div class="text-center mb-4">
+    <h1 class="display-5">Save historical data points</h1>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(Model.StatusMessage))
+{
+    <div class="alert alert-success" role="alert">@Model.StatusMessage</div>
+}
+
+<form method="post" class="row g-3">
+    <div asp-validation-summary="ModelOnly" class="text-danger"></div>
+
+    <div class="col-md-6">
+        <label asp-for="Input.Location" class="form-label"></label>
+        <input asp-for="Input.Location" class="form-control" />
+        <span asp-validation-for="Input.Location" class="text-danger"></span>
+    </div>
+
+    <div class="col-md-6">
+        <label asp-for="Input.EventDate" class="form-label">Event date</label>
+        <input asp-for="Input.EventDate" type="datetime-local" class="form-control" />
+        <span asp-validation-for="Input.EventDate" class="text-danger"></span>
+    </div>
+
+    <div class="col-12">
+        <label asp-for="Input.Description" class="form-label"></label>
+        <textarea asp-for="Input.Description" class="form-control" rows="4"></textarea>
+        <span asp-validation-for="Input.Description" class="text-danger"></span>
+    </div>
+
+    <div class="col-12">
+        <button type="submit" class="btn btn-primary">Save data point</button>
+    </div>
+</form>
+

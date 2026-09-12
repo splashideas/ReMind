@@ -1,2 +1,9 @@
 # ReMind
-App to help people rediscover History.  Allow users to add Historical information to a location at a given time, add extra data like linked events or media (Photos, videos, hyperlinks, etc). Allow users to search a map and view history of locations around them.
+
+ReMind is structured as a .NET 10 solution for Azure deployment:
+
+- `src/ReMind.Frontend`: ASP.NET Core frontend intended for Azure App Service.
+- `src/ReMind.Functions`: Azure Functions app that receives save events and stores data points in Azure SQL.
+- `database/ReMind.Database`: .NET database project containing Azure SQL schema deployment scripts.
+- `infra/terraform`: Terraform IaC for Azure App Service, Function App, and Azure SQL resources.
+- `.github/workflows`: GitHub Actions workflows for build/validate and deploy.
