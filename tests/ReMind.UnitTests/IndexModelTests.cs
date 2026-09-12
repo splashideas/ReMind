@@ -14,7 +14,7 @@ public class IndexModelTests
     [Fact]
     public async Task OnPostAsync_ReturnsPage_WhenModelStateIsInvalid()
     {
-var (model, client) = CreateModel(_ => throw new InvalidOperationException("Request should not be sent."));
+        var (model, client) = CreateModel(_ => throw new InvalidOperationException("Request should not be sent."));
         using var _ = client;
         model.ModelState.AddModelError("Input.Location", "Required");
 
@@ -26,7 +26,7 @@ var (model, client) = CreateModel(_ => throw new InvalidOperationException("Requ
     [Fact]
     public async Task OnPostAsync_AddsModelError_WhenFunctionUrlIsMissing()
     {
-        var model = CreateModel(_ => throw new InvalidOperationException("Request should not be sent."), null);
+        var model = CreateModel(_ => throw new InvalidOperationException("Request should not be sent."), null).Model;
 
         var result = await model.OnPostAsync();
 
@@ -43,7 +43,7 @@ var (model, client) = CreateModel(_ => throw new InvalidOperationException("Requ
         {
             capturedRequest = request;
             return new HttpResponseMessage(HttpStatusCode.Created);
-        });
+        }).Model;
 
         var result = await model.OnPostAsync();
 
