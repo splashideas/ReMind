@@ -8,7 +8,7 @@ using ReMind.Functions.Models;
 
 namespace ReMind.Functions.Functions;
 
-public sealed class SaveDataPointFunction
+public class SaveDataPointFunction
 {
     private readonly string _connectionString;
 
@@ -23,51 +23,72 @@ public sealed class SaveDataPointFunction
         CancellationToken cancellationToken)
     {
         var payload = await req.ReadFromJsonAsync<SaveDataPointRequest>(cancellationToken);
+        var outcome = await HandleAsync(payload, cancellationToken);
+        var response = req.CreateResponse(outcome.StatusCode);
+        await response.WriteStringAsync(outcome.Message, cancellationToken);
+        return response;
+    }
+
+    internal async Task<SaveDataPointOutcome> HandleAsync(
+        SaveDataPointRequest? payload,
+        CancellationToken cancellationToken)
+    {
         if (payload is null ||
             string.IsNullOrWhiteSpace(payload.Location) ||
             string.IsNullOrWhiteSpace(payload.Description) ||
             !payload.EventDate.HasValue ||
             payload.EventDate.Value == default)
         {
-            var badRequest = req.CreateResponse(HttpStatusCode.BadRequest);
-            await badRequest.WriteStringAsync("Invalid request payload.", cancellationToken);
-            return badRequest;
+            return SaveDataPointOutcome.InvalidPayload;
         }
 
         if (string.IsNullOrWhiteSpace(_connectionString))
         {
-            var serverError = req.CreateResponse(HttpStatusCode.InternalServerError);
-            await serverError.WriteStringAsync("SQL connection is not configured.", cancellationToken);
-            return serverError;
+            return SaveDataPointOutcome.MissingConnectionString;
         }
 
         try
         {
-            await using var connection = new SqlConnection(_connectionString);
-            await connection.OpenAsync(cancellationToken);
-
-            await using var command = connection.CreateCommand();
-            command.CommandType = CommandType.Text;
-            command.CommandText = """
-                                  INSERT INTO dbo.DataPoints (Location, EventDate, Description)
-                                  VALUES (@Location, @EventDate, @Description);
-                                  """;
-
-            command.Parameters.Add(new SqlParameter("@Location", SqlDbType.NVarChar, 200) { Value = payload.Location });
-            command.Parameters.Add(new SqlParameter("@EventDate", SqlDbType.DateTime2) { Value = payload.EventDate.Value });
-            command.Parameters.Add(new SqlParameter("@Description", SqlDbType.NVarChar, -1) { Value = payload.Description });
-
-            await command.ExecuteNonQueryAsync(cancellationToken);
+            await SaveDataPointAsync(payload, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception)
         {
-            var serverError = req.CreateResponse(HttpStatusCode.InternalServerError);
-            await serverError.WriteStringAsync("Failed to save the data point.", cancellationToken);
-            return serverError;
+            return SaveDataPointOutcome.SaveFailed;
         }
 
-        var created = req.CreateResponse(HttpStatusCode.Created);
-        await created.WriteStringAsync("Saved.", cancellationToken);
-        return created;
+        return SaveDataPointOutcome.Success;
     }
+
+    protected virtual async Task SaveDataPointAsync(
+        SaveDataPointRequest payload,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqlConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        await using var command = connection.CreateCommand();
+        command.CommandType = CommandType.Text;
+        command.CommandText = """
+                              INSERT INTO dbo.DataPoints (Location, EventDate, Description)
+                              VALUES (@Location, @EventDate, @Description);
+                              """;
+
+        command.Parameters.Add(new SqlParameter("@Location", SqlDbType.NVarChar, 200) { Value = payload.Location });
+        command.Parameters.Add(new SqlParameter("@EventDate", SqlDbType.DateTime2) { Value = payload.EventDate!.Value });
+        command.Parameters.Add(new SqlParameter("@Description", SqlDbType.NVarChar, -1) { Value = payload.Description });
+
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+}
+
+internal sealed record SaveDataPointOutcome(HttpStatusCode StatusCode, string Message)
+{
+    public static readonly SaveDataPointOutcome InvalidPayload = new(HttpStatusCode.BadRequest, "Invalid request payload.");
+    public static readonly SaveDataPointOutcome MissingConnectionString = new(HttpStatusCode.InternalServerError, "SQL connection is not configured.");
+    public static readonly SaveDataPointOutcome SaveFailed = new(HttpStatusCode.InternalServerError, "Failed to save the data point.");
+    public static readonly SaveDataPointOutcome Success = new(HttpStatusCode.Created, "Saved.");
 }

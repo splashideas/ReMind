@@ -1,4 +1,4 @@
-name: build-validate
+name: terraform-validate
 
 on:
   pull_request:
@@ -10,18 +10,6 @@ permissions:
   contents: read
 
 jobs:
-  dotnet-build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 10.0.x
-      - name: Restore solution
-        run: dotnet restore ReMind.sln
-      - name: Build solution
-        run: dotnet build ReMind.sln --no-restore -c Release
-
   terraform-validate:
     runs-on: ubuntu-latest
     defaults:
