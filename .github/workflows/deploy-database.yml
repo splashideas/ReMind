@@ -1,0 +1,18 @@
+name: deploy-database
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy-schema:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - name: Deploy schema script
+        uses: azure/sql-action@v2
+        with:
+          connection-string: ${{ secrets.AZURE_SQL_CONNECTION_STRING }}
+          path: database/ReMind.Database/Schema/Tables/DataPoints.sql

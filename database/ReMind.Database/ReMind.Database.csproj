@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="Schema/**/*.sql" Pack="true" PackagePath="contentFiles/any/any/Schema/" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
