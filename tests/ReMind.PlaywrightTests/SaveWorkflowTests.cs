@@ -244,18 +244,27 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
             }
         };
         process.ErrorDataReceived += (_, _) => { };
-        if (!process.Start())
+
+        try
         {
-            throw new InvalidOperationException("Failed to start frontend process.");
+            if (!process.Start())
+            {
+                throw new InvalidOperationException("Failed to start frontend process.");
+            }
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            using var registration = timeout.Token.Register(() => started.TrySetCanceled(timeout.Token));
+            var frontendBaseUrl = await started.Task;
+
+            return (process, frontendBaseUrl);
         }
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        using var registration = timeout.Token.Register(() => started.TrySetCanceled(timeout.Token));
-        var frontendBaseUrl = await started.Task;
-
-        return (process, frontendBaseUrl);
+        catch
+        {
+            process.Dispose();
+            throw;
+        }
     }
 
     private static async Task WaitForUrlAsync(string url)
