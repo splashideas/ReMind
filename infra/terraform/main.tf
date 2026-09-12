@@ -78,6 +78,8 @@ resource "azurerm_linux_function_app" "function" {
 data "azurerm_function_app_host_keys" "function" {
   name                = azurerm_linux_function_app.function.name
   resource_group_name = azurerm_resource_group.remind.name
+
+  depends_on = [azurerm_role_assignment.function_blob]
 }
 
 resource "azurerm_role_assignment" "function_blob" {

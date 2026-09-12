@@ -40,9 +40,11 @@ public class IndexModelTests
     public async Task OnPostAsync_ResetsInputAndShowsSuccess_WhenSaveSucceeds()
     {
         HttpRequestMessage? capturedRequest = null;
+        SaveDataPointRequest? capturedPayload = null;
         var (model, client) = CreateModel((request, _) =>
         {
             capturedRequest = request;
+            capturedPayload = request.Content!.ReadFromJsonAsync<SaveDataPointRequest>().GetAwaiter().GetResult();
             return new HttpResponseMessage(HttpStatusCode.Created);
         });
         using var _ = client;
@@ -58,11 +60,10 @@ public class IndexModelTests
         Assert.NotNull(capturedRequest);
         Assert.Equal(HttpMethod.Post, capturedRequest.Method);
         Assert.Equal("https://example.test/api/datapoints", capturedRequest.RequestUri!.ToString());
-        var payload = await capturedRequest.Content!.ReadFromJsonAsync<SaveDataPointRequest>();
-        Assert.NotNull(payload);
-        Assert.Equal("Rome", payload.Location);
-        Assert.Equal(new DateTime(2024, 4, 5, 14, 30, 0, DateTimeKind.Utc), payload.EventDate);
-        Assert.Equal("Observed a remarkable event.", payload.Description);
+        Assert.NotNull(capturedPayload);
+        Assert.Equal("Rome", capturedPayload.Location);
+        Assert.Equal(new DateTime(2024, 4, 5, 14, 30, 0, DateTimeKind.Utc), capturedPayload.EventDate);
+        Assert.Equal("Observed a remarkable event.", capturedPayload.Description);
     }
 
     [Fact]

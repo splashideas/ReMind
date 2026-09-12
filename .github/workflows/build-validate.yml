@@ -21,6 +21,8 @@ jobs:
         run: dotnet restore ReMind.sln
       - name: Build solution
         run: dotnet build ReMind.sln --no-restore -c Release
+      - name: Test solution
+        run: dotnet test ReMind.sln --no-build -c Release
 
   terraform-validate:
     runs-on: ubuntu-latest
