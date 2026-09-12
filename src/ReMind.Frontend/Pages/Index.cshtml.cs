@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
+using Microsoft.AspNetCore.WebUtilities;
 using ReMind.Frontend.Models;
 
 namespace ReMind.Frontend.Pages;
@@ -29,6 +30,13 @@ public class IndexModel(IHttpClientFactory httpClientFactory, IConfiguration con
         {
             ModelState.AddModelError(string.Empty, "Function endpoint is not configured.");
             return Page();
+        }
+
+        if (string.IsNullOrWhiteSpace(functionKey) &&
+            Uri.TryCreate(functionUrl, UriKind.Absolute, out var functionUri) &&
+            QueryHelpers.ParseQuery(functionUri.Query).TryGetValue("code", out var codeValues))
+        {
+            functionKey = codeValues.ToString();
         }
 
         var client = httpClientFactory.CreateClient();

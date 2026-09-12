@@ -87,6 +87,26 @@ public class IndexModelTests
     }
 
     [Fact]
+    public async Task OnPostAsync_AddsFunctionsKeyHeader_WhenCodeQueryParameterIsConfigured()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        var (model, client) = CreateModel((request, _) =>
+        {
+            capturedRequest = request;
+            return new HttpResponseMessage(HttpStatusCode.Created);
+        }, functionUrl: "https://example.test/api/datapoints?code=query-key");
+        using var _ = client;
+
+        var result = await model.OnPostAsync();
+
+        Assert.IsType<PageResult>(result);
+        Assert.NotNull(capturedRequest);
+        Assert.Equal("https://example.test/api/datapoints?code=query-key", capturedRequest.RequestUri!.ToString());
+        Assert.True(capturedRequest.Headers.TryGetValues("x-functions-key", out var values));
+        Assert.Equal("query-key", Assert.Single(values));
+    }
+
+    [Fact]
     public async Task OnPostAsync_AddsModelError_WhenSaveFails()
     {
         var (model, client) = CreateModel((_, _) => new HttpResponseMessage(HttpStatusCode.BadGateway));
