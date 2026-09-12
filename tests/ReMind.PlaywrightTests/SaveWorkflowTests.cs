@@ -245,8 +245,15 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
 
             const string routeSuffix = "/api/datapoints";
             var routeIndex = data.IndexOf(routeSuffix, StringComparison.OrdinalIgnoreCase);
-            if (routeIndex > 0 &&
-                Uri.TryCreate(data[..routeIndex], UriKind.Absolute, out var baseUri))
+            var httpIndex = routeIndex > 0
+                ? data.LastIndexOf("http://", routeIndex, StringComparison.OrdinalIgnoreCase)
+                : -1;
+            var httpsIndex = routeIndex > 0
+                ? data.LastIndexOf("https://", routeIndex, StringComparison.OrdinalIgnoreCase)
+                : -1;
+            var baseUrlStartIndex = Math.Max(httpIndex, httpsIndex);
+            if (baseUrlStartIndex >= 0 &&
+                Uri.TryCreate(data[baseUrlStartIndex..routeIndex], UriKind.Absolute, out var baseUri))
             {
                 started.TrySetResult(baseUri.GetLeftPart(UriPartial.Authority));
             }
