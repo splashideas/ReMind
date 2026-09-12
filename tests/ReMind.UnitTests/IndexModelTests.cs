@@ -65,7 +65,8 @@ public class IndexModelTests
     [Fact]
     public async Task OnPostAsync_AddsModelError_WhenSaveFails()
     {
-        var model = CreateModel(_ => new HttpResponseMessage(HttpStatusCode.BadGateway));
+        var (model, client) = CreateModel(_ => new HttpResponseMessage(HttpStatusCode.BadGateway));
+        using var _ = client;
 
         var result = await model.OnPostAsync();
 
@@ -75,7 +76,7 @@ public class IndexModelTests
         Assert.Equal("Save failed (502).", error.ErrorMessage);
     }
 
-    private static IndexModel CreateModel(
+    private static (IndexModel Model, HttpClient Client) CreateModel(
         Func<HttpRequestMessage, HttpResponseMessage> send,
         string? functionUrl = "https://example.test/api/datapoints")
     {
@@ -104,7 +105,7 @@ public class IndexModelTests
             }
         };
 
-        return model;
+        return (model, client);
     }
 
     private sealed class StubHttpClientFactory(HttpClient client) : IHttpClientFactory
