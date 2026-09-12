@@ -14,7 +14,7 @@ public class IndexModelTests
     [Fact]
     public async Task OnPostAsync_ReturnsPage_WhenModelStateIsInvalid()
     {
-        var (model, client) = CreateModel(_ => throw new InvalidOperationException("Request should not be sent."));
+        var (model, client) = CreateModel((_, _) => throw new InvalidOperationException("Request should not be sent."));
         using var _ = client;
         model.ModelState.AddModelError("Input.Location", "Required");
 
@@ -26,7 +26,7 @@ public class IndexModelTests
     [Fact]
     public async Task OnPostAsync_AddsModelError_WhenFunctionUrlIsMissing()
     {
-        var (model, client) = CreateModel(_ => throw new InvalidOperationException("Request should not be sent."), null);
+        var (model, client) = CreateModel((_, _) => throw new InvalidOperationException("Request should not be sent."), null);
         using var _ = client;
 
         var result = await model.OnPostAsync();
@@ -40,7 +40,7 @@ public class IndexModelTests
     public async Task OnPostAsync_ResetsInputAndShowsSuccess_WhenSaveSucceeds()
     {
         HttpRequestMessage? capturedRequest = null;
-        var (model, client) = CreateModel(request =>
+        var (model, client) = CreateModel((request, _) =>
         {
             capturedRequest = request;
             return new HttpResponseMessage(HttpStatusCode.Created);
@@ -68,7 +68,7 @@ public class IndexModelTests
     [Fact]
     public async Task OnPostAsync_AddsModelError_WhenSaveFails()
     {
-        var (model, client) = CreateModel(_ => new HttpResponseMessage(HttpStatusCode.BadGateway));
+        var (model, client) = CreateModel((_, _) => new HttpResponseMessage(HttpStatusCode.BadGateway));
         using var _ = client;
 
         var result = await model.OnPostAsync();
@@ -80,7 +80,7 @@ public class IndexModelTests
     }
 
     private static (IndexModel Model, HttpClient Client) CreateModel(
-        Func<HttpRequestMessage, HttpResponseMessage> send,
+        Func<HttpRequestMessage, CancellationToken, HttpResponseMessage> send,
         string? functionUrl = "https://example.test/api/datapoints")
     {
         var configValues = new Dictionary<string, string?>();
@@ -116,9 +116,9 @@ public class IndexModelTests
         public HttpClient CreateClient(string name) => client;
     }
 
-    private sealed class StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> send) : HttpMessageHandler
+    private sealed class StubHttpMessageHandler(Func<HttpRequestMessage, CancellationToken, HttpResponseMessage> send) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
-            Task.FromResult(send(request));
+            Task.FromResult(send(request, cancellationToken));
     }
 }
