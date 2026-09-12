@@ -14,7 +14,7 @@ public class IndexModelTests
     [Fact]
     public async Task OnPostAsync_ReturnsPage_WhenModelStateIsInvalid()
     {
-        var (model, client) = CreateModel(_ => throw new InvalidOperationException("Request should not be sent."));
+        var (model, client) = CreateModel((_, _) => throw new InvalidOperationException("Request should not be sent."));
         using var _ = client;
         model.ModelState.AddModelError("Input.Location", "Required");
 
@@ -26,7 +26,8 @@ public class IndexModelTests
     [Fact]
     public async Task OnPostAsync_AddsModelError_WhenFunctionUrlIsMissing()
     {
-        var model = CreateModel(_ => throw new InvalidOperationException("Request should not be sent."), null).Model;
+        var (model, client) = CreateModel((_, _) => throw new InvalidOperationException("Request should not be sent."), null);
+        using var _ = client;
 
         var result = await model.OnPostAsync();
 
@@ -39,11 +40,14 @@ public class IndexModelTests
     public async Task OnPostAsync_ResetsInputAndShowsSuccess_WhenSaveSucceeds()
     {
         HttpRequestMessage? capturedRequest = null;
-        var model = CreateModel(request =>
+        SaveDataPointRequest? capturedPayload = null;
+        var (model, client) = CreateModel((request, _) =>
         {
             capturedRequest = request;
+            capturedPayload = request.Content!.ReadFromJsonAsync<SaveDataPointRequest>().GetAwaiter().GetResult();
             return new HttpResponseMessage(HttpStatusCode.Created);
-        }).Model;
+        });
+        using var _ = client;
 
         var result = await model.OnPostAsync();
 
@@ -56,17 +60,56 @@ public class IndexModelTests
         Assert.NotNull(capturedRequest);
         Assert.Equal(HttpMethod.Post, capturedRequest.Method);
         Assert.Equal("https://example.test/api/datapoints", capturedRequest.RequestUri!.ToString());
-        var payload = await capturedRequest.Content!.ReadFromJsonAsync<SaveDataPointRequest>();
-        Assert.NotNull(payload);
-        Assert.Equal("Rome", payload.Location);
-        Assert.Equal(new DateTime(2024, 4, 5, 14, 30, 0, DateTimeKind.Utc), payload.EventDate);
-        Assert.Equal("Observed a remarkable event.", payload.Description);
+        Assert.NotNull(capturedPayload);
+        Assert.Equal("Rome", capturedPayload.Location);
+        Assert.Equal(new DateTime(2024, 4, 5, 14, 30, 0, DateTimeKind.Utc), capturedPayload.EventDate);
+        Assert.Equal("Observed a remarkable event.", capturedPayload.Description);
+    }
+
+    [Fact]
+    public async Task OnPostAsync_AddsFunctionsKeyHeader_WhenFunctionKeyIsConfigured()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        var (model, client) = CreateModel((request, _) =>
+        {
+            capturedRequest = request;
+            return new HttpResponseMessage(HttpStatusCode.Created);
+        }, functionKey: "test-key");
+        using var _ = client;
+
+        var result = await model.OnPostAsync();
+
+        Assert.IsType<PageResult>(result);
+        Assert.NotNull(capturedRequest);
+        Assert.Equal("https://example.test/api/datapoints", capturedRequest.RequestUri!.ToString());
+        Assert.True(capturedRequest.Headers.TryGetValues("x-functions-key", out var values));
+        Assert.Equal("test-key", Assert.Single(values));
+    }
+
+    [Fact]
+    public async Task OnPostAsync_AddsFunctionsKeyHeader_WhenCodeQueryParameterIsConfigured()
+    {
+        HttpRequestMessage? capturedRequest = null;
+        var (model, client) = CreateModel((request, _) =>
+        {
+            capturedRequest = request;
+            return new HttpResponseMessage(HttpStatusCode.Created);
+        }, functionUrl: "https://example.test/api/datapoints?code=query-key");
+        using var _ = client;
+
+        var result = await model.OnPostAsync();
+
+        Assert.IsType<PageResult>(result);
+        Assert.NotNull(capturedRequest);
+        Assert.Equal("https://example.test/api/datapoints?code=query-key", capturedRequest.RequestUri!.ToString());
+        Assert.True(capturedRequest.Headers.TryGetValues("x-functions-key", out var values));
+        Assert.Equal("query-key", Assert.Single(values));
     }
 
     [Fact]
     public async Task OnPostAsync_AddsModelError_WhenSaveFails()
     {
-        var (model, client) = CreateModel(_ => new HttpResponseMessage(HttpStatusCode.BadGateway));
+        var (model, client) = CreateModel((_, _) => new HttpResponseMessage(HttpStatusCode.BadGateway));
         using var _ = client;
 
         var result = await model.OnPostAsync();
@@ -78,13 +121,19 @@ public class IndexModelTests
     }
 
     private static (IndexModel Model, HttpClient Client) CreateModel(
-        Func<HttpRequestMessage, HttpResponseMessage> send,
-        string? functionUrl = "https://example.test/api/datapoints")
+        Func<HttpRequestMessage, CancellationToken, HttpResponseMessage> send,
+        string? functionUrl = "https://example.test/api/datapoints",
+        string? functionKey = null)
     {
         var configValues = new Dictionary<string, string?>();
         if (functionUrl is not null)
         {
             configValues["SaveDataPointFunctionUrl"] = functionUrl;
+        }
+
+        if (functionKey is not null)
+        {
+            configValues["SaveDataPointFunctionKey"] = functionKey;
         }
 
         var configuration = new ConfigurationBuilder()
@@ -114,9 +163,9 @@ public class IndexModelTests
         public HttpClient CreateClient(string name) => client;
     }
 
-    private sealed class StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> send) : HttpMessageHandler
+    private sealed class StubHttpMessageHandler(Func<HttpRequestMessage, CancellationToken, HttpResponseMessage> send) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
-            Task.FromResult(send(request));
+            Task.FromResult(send(request, cancellationToken));
     }
 }

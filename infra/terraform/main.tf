@@ -40,6 +40,7 @@ resource "azurerm_linux_web_app" "frontend" {
 
   app_settings = {
     SaveDataPointFunctionUrl = "https://${azurerm_linux_function_app.function.default_hostname}/api/datapoints"
+    SaveDataPointFunctionKey = data.azurerm_function_app_host_keys.function.default_function_key
   }
 }
 
@@ -72,6 +73,13 @@ resource "azurerm_linux_function_app" "function" {
   app_settings = {
     SqlConnectionString = var.sql_connection_setting_value
   }
+}
+
+data "azurerm_function_app_host_keys" "function" {
+  name                = azurerm_linux_function_app.function.name
+  resource_group_name = azurerm_resource_group.remind.name
+
+  depends_on = [azurerm_role_assignment.function_blob]
 }
 
 resource "azurerm_role_assignment" "function_blob" {

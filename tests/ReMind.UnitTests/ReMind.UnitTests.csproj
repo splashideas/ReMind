@@ -20,7 +20,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\ReMind.Frontend\ReMind.Frontend.csproj" />
-    <ProjectReference Include="..\..\src\ReMind.Functions\ReMind.Functions.csproj" />
   </ItemGroup>
 
 </Project>

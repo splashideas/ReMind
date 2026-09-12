@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
+using Microsoft.AspNetCore.WebUtilities;
 using ReMind.Frontend.Models;
 
 namespace ReMind.Frontend.Pages;
@@ -24,14 +25,32 @@ public class IndexModel(IHttpClientFactory httpClientFactory, IConfiguration con
         }
 
         var functionUrl = configuration["SaveDataPointFunctionUrl"];
+        var functionKey = configuration["SaveDataPointFunctionKey"];
         if (string.IsNullOrWhiteSpace(functionUrl))
         {
             ModelState.AddModelError(string.Empty, "Function endpoint is not configured.");
             return Page();
         }
 
+        if (string.IsNullOrWhiteSpace(functionKey) &&
+            Uri.TryCreate(functionUrl, UriKind.Absolute, out var functionUri) &&
+            QueryHelpers.ParseQuery(functionUri.Query).TryGetValue("code", out var codeValues))
+        {
+            functionKey = codeValues.ToString();
+        }
+
         var client = httpClientFactory.CreateClient();
-        var response = await client.PostAsJsonAsync(functionUrl, Input, HttpContext.RequestAborted);
+        using var request = new HttpRequestMessage(HttpMethod.Post, functionUrl)
+        {
+            Content = JsonContent.Create(Input)
+        };
+
+        if (!string.IsNullOrWhiteSpace(functionKey))
+        {
+            request.Headers.TryAddWithoutValidation("x-functions-key", functionKey);
+        }
+
+        using var response = await client.SendAsync(request, HttpContext.RequestAborted);
 
         if (response.IsSuccessStatusCode)
         {

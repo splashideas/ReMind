@@ -27,13 +27,7 @@ jobs:
         run: dotnet restore ReMind.sln
       - name: Build solution
         run: dotnet build ReMind.sln --no-restore -c Release
-      - name: Install Playwright browser
-        run: pwsh tests/ReMind.PlaywrightTests/bin/Release/net10.0/playwright.ps1 install chromium
-      - name: Pull test container images
-        run: |
-          docker pull mcr.microsoft.com/mssql/server:2022-latest
-          docker pull mcr.microsoft.com/azure-storage/azurite:latest
-      - name: Run tests
+      - name: Test solution
         run: dotnet test ReMind.sln --no-build -c Release
 
   terraform-validate:
