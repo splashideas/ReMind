@@ -300,7 +300,7 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null)
         {
-            if (File.Exists(Path.Combine(directory.FullName, "ReMind.sln")))
+            if (File.Exists(Path.Join(directory.FullName, "ReMind.sln")))
             {
                 return Path.Join(directory.FullName, "src", "ReMind.Frontend", "ReMind.Frontend.csproj");
             }
