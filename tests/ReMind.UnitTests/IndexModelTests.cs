@@ -66,21 +66,21 @@ public class IndexModelTests
     }
 
     [Fact]
-    public async Task OnPostAsync_AddsFunctionsKeyHeader_WhenFunctionUrlContainsCode()
+    public async Task OnPostAsync_AddsFunctionsKeyHeader_WhenFunctionKeyIsConfigured()
     {
         HttpRequestMessage? capturedRequest = null;
         var (model, client) = CreateModel((request, _) =>
         {
             capturedRequest = request;
             return new HttpResponseMessage(HttpStatusCode.Created);
-        }, "https://example.test/api/datapoints?code=test-key");
+        }, functionKey: "test-key");
         using var _ = client;
 
         var result = await model.OnPostAsync();
 
         Assert.IsType<PageResult>(result);
         Assert.NotNull(capturedRequest);
-        Assert.Equal("https://example.test/api/datapoints?code=test-key", capturedRequest.RequestUri!.ToString());
+        Assert.Equal("https://example.test/api/datapoints", capturedRequest.RequestUri!.ToString());
         Assert.True(capturedRequest.Headers.TryGetValues("x-functions-key", out var values));
         Assert.Equal("test-key", Assert.Single(values));
     }
@@ -101,12 +101,18 @@ public class IndexModelTests
 
     private static (IndexModel Model, HttpClient Client) CreateModel(
         Func<HttpRequestMessage, CancellationToken, HttpResponseMessage> send,
-        string? functionUrl = "https://example.test/api/datapoints")
+        string? functionUrl = "https://example.test/api/datapoints",
+        string? functionKey = null)
     {
         var configValues = new Dictionary<string, string?>();
         if (functionUrl is not null)
         {
             configValues["SaveDataPointFunctionUrl"] = functionUrl;
+        }
+
+        if (functionKey is not null)
+        {
+            configValues["SaveDataPointFunctionKey"] = functionKey;
         }
 
         var configuration = new ConfigurationBuilder()
