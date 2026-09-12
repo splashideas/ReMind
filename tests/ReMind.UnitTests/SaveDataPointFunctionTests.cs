@@ -9,7 +9,7 @@ public class SaveDataPointFunctionTests
     [Fact]
     public async Task HandleAsync_ReturnsInvalidPayload_WhenPayloadIsMissingRequiredFields()
     {
-        var function = CreateFunction(_ => Task.CompletedTask);
+        var function = CreateFunction((_, _) => Task.CompletedTask);
 
         var outcome = await function.HandleAsync(new SaveDataPointRequest(), CancellationToken.None);
 
@@ -19,7 +19,7 @@ public class SaveDataPointFunctionTests
     [Fact]
     public async Task HandleAsync_ReturnsInvalidPayload_WhenPayloadIsNull()
     {
-        var function = CreateFunction(_ => Task.CompletedTask);
+        var function = CreateFunction((_, _) => Task.CompletedTask);
 
         var outcome = await function.HandleAsync(null, CancellationToken.None);
 
@@ -29,7 +29,7 @@ public class SaveDataPointFunctionTests
     [Fact]
     public async Task HandleAsync_ReturnsInvalidPayload_WhenDescriptionIsBlank()
     {
-        var function = CreateFunction(_ => Task.CompletedTask);
+        var function = CreateFunction((_, _) => Task.CompletedTask);
         var request = CreateValidRequest();
         request.Description = " ";
 
@@ -41,7 +41,7 @@ public class SaveDataPointFunctionTests
     [Fact]
     public async Task HandleAsync_ReturnsInvalidPayload_WhenEventDateIsNull()
     {
-        var function = CreateFunction(_ => Task.CompletedTask);
+        var function = CreateFunction((_, _) => Task.CompletedTask);
         var request = CreateValidRequest();
         request.EventDate = null;
 
@@ -53,7 +53,7 @@ public class SaveDataPointFunctionTests
     [Fact]
     public async Task HandleAsync_ReturnsInvalidPayload_WhenEventDateIsDefault()
     {
-        var function = CreateFunction(_ => Task.CompletedTask);
+        var function = CreateFunction((_, _) => Task.CompletedTask);
         var request = CreateValidRequest();
         request.EventDate = default;
 
@@ -65,7 +65,7 @@ public class SaveDataPointFunctionTests
     [Fact]
     public async Task HandleAsync_ReturnsMissingConnectionString_WhenConfigurationIsMissing()
     {
-        var function = CreateFunction(_ => Task.CompletedTask, connectionString: null);
+        var function = CreateFunction((_, _) => Task.CompletedTask, connectionString: null);
 
         var outcome = await function.HandleAsync(CreateValidRequest(), CancellationToken.None);
 
@@ -76,23 +76,27 @@ public class SaveDataPointFunctionTests
     public async Task HandleAsync_ReturnsSuccess_WhenSaveCompletes()
     {
         SaveDataPointRequest? capturedRequest = null;
-        var function = CreateFunction(request =>
+        CancellationToken capturedToken = default;
+        var function = CreateFunction((request, cancellationToken) =>
         {
             capturedRequest = request;
+            capturedToken = cancellationToken;
             return Task.CompletedTask;
         });
 
+        using var cts = new CancellationTokenSource();
         var request = CreateValidRequest();
-        var outcome = await function.HandleAsync(request, CancellationToken.None);
+        var outcome = await function.HandleAsync(request, cts.Token);
 
         Assert.Same(SaveDataPointOutcome.Success, outcome);
         Assert.Same(request, capturedRequest);
+        Assert.Equal(cts.Token, capturedToken);
     }
 
     [Fact]
     public async Task HandleAsync_ReturnsSaveFailed_WhenSaveThrows()
     {
-        var function = CreateFunction(_ => throw new InvalidOperationException("boom"));
+        var function = CreateFunction((_, _) => throw new InvalidOperationException("boom"));
 
         var outcome = await function.HandleAsync(CreateValidRequest(), CancellationToken.None);
 
@@ -102,14 +106,21 @@ public class SaveDataPointFunctionTests
     [Fact]
     public async Task HandleAsync_RethrowsCancellation_WhenSaveIsCancelled()
     {
-        var function = CreateFunction(_ => throw new OperationCanceledException());
+        CancellationToken capturedToken = default;
+        using var cts = new CancellationTokenSource();
+        var function = CreateFunction((_, cancellationToken) =>
+        {
+            capturedToken = cancellationToken;
+            throw new OperationCanceledException(cancellationToken);
+        });
 
         await Assert.ThrowsAsync<OperationCanceledException>(() =>
-            function.HandleAsync(CreateValidRequest(), CancellationToken.None));
+            function.HandleAsync(CreateValidRequest(), cts.Token));
+        Assert.Equal(cts.Token, capturedToken);
     }
 
     private static TestableSaveDataPointFunction CreateFunction(
-        Func<SaveDataPointRequest, Task> saveAsync,
+        Func<SaveDataPointRequest, CancellationToken, Task> saveAsync,
         string? connectionString = "Server=test;Database=ReMind;Encrypt=False;")
     {
         var values = new Dictionary<string, string?>();
@@ -135,11 +146,11 @@ public class SaveDataPointFunctionTests
 
     private sealed class TestableSaveDataPointFunction(
         IConfiguration configuration,
-        Func<SaveDataPointRequest, Task> saveAsync) : SaveDataPointFunction(configuration)
+        Func<SaveDataPointRequest, CancellationToken, Task> saveAsync) : SaveDataPointFunction(configuration)
     {
         protected override Task SaveDataPointAsync(
             SaveDataPointRequest payload,
             CancellationToken cancellationToken) =>
-            saveAsync(payload);
+            saveAsync(payload, cancellationToken);
     }
 }
