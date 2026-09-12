@@ -273,8 +273,7 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
                 : -1;
             var baseUrlStartIndex = Math.Max(httpIndex, httpsIndex);
             if (baseUrlStartIndex >= 0 &&
-                Uri.TryCreate(data[baseUrlStartIndex..routeIndex], UriKind.Absolute, out _) ||
-                data.Contains("Worker process started and initialized.", StringComparison.Ordinal))
+                Uri.TryCreate(data[baseUrlStartIndex..routeIndex], UriKind.Absolute, out _))
             {
                 started.TrySetResult();
             }
