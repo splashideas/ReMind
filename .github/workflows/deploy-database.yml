@@ -3,6 +3,9 @@ name: deploy-database
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   deploy-schema:
     runs-on: windows-latest

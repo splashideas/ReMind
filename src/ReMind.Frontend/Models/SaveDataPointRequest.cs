@@ -9,7 +9,7 @@ public sealed class SaveDataPointRequest
     public string Location { get; set; } = string.Empty;
 
     [Required]
-    public DateTime EventDate { get; set; }
+    public DateTime? EventDate { get; set; }
 
     [Required]
     [StringLength(4000)]

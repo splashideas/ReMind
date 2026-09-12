@@ -14,9 +14,7 @@ public sealed class SaveDataPointFunction
 
     public SaveDataPointFunction(IConfiguration configuration)
     {
-        _connectionString = configuration["SqlConnectionString"]
-                            ?? Environment.GetEnvironmentVariable("SqlConnectionString")
-                            ?? string.Empty;
+        _connectionString = configuration["SqlConnectionString"] ?? string.Empty;
     }
 
     [Function("SaveDataPoint")]
@@ -28,7 +26,8 @@ public sealed class SaveDataPointFunction
         if (payload is null ||
             string.IsNullOrWhiteSpace(payload.Location) ||
             string.IsNullOrWhiteSpace(payload.Description) ||
-            payload.EventDate == default)
+            !payload.EventDate.HasValue ||
+            payload.EventDate.Value == default)
         {
             var badRequest = req.CreateResponse(HttpStatusCode.BadRequest);
             await badRequest.WriteStringAsync("Invalid request payload.", cancellationToken);
@@ -42,21 +41,30 @@ public sealed class SaveDataPointFunction
             return serverError;
         }
 
-        await using var connection = new SqlConnection(_connectionString);
-        await connection.OpenAsync(cancellationToken);
+        try
+        {
+            await using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
 
-        await using var command = connection.CreateCommand();
-        command.CommandType = CommandType.Text;
-        command.CommandText = """
-                              INSERT INTO dbo.DataPoints (Location, EventDate, Description)
-                              VALUES (@Location, @EventDate, @Description);
-                              """;
+            await using var command = connection.CreateCommand();
+            command.CommandType = CommandType.Text;
+            command.CommandText = """
+                                  INSERT INTO dbo.DataPoints (Location, EventDate, Description)
+                                  VALUES (@Location, @EventDate, @Description);
+                                  """;
 
-        command.Parameters.Add(new SqlParameter("@Location", SqlDbType.NVarChar, 200) { Value = payload.Location });
-        command.Parameters.Add(new SqlParameter("@EventDate", SqlDbType.DateTime2) { Value = payload.EventDate });
-        command.Parameters.Add(new SqlParameter("@Description", SqlDbType.NVarChar, -1) { Value = payload.Description });
+            command.Parameters.Add(new SqlParameter("@Location", SqlDbType.NVarChar, 200) { Value = payload.Location });
+            command.Parameters.Add(new SqlParameter("@EventDate", SqlDbType.DateTime2) { Value = payload.EventDate.Value });
+            command.Parameters.Add(new SqlParameter("@Description", SqlDbType.NVarChar, -1) { Value = payload.Description });
 
-        await command.ExecuteNonQueryAsync(cancellationToken);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (Exception)
+        {
+            var serverError = req.CreateResponse(HttpStatusCode.InternalServerError);
+            await serverError.WriteStringAsync("Failed to save the data point.", cancellationToken);
+            return serverError;
+        }
 
         var created = req.CreateResponse(HttpStatusCode.Created);
         await created.WriteStringAsync("Saved.", cancellationToken);

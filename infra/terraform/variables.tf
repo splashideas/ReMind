@@ -14,6 +14,18 @@ variable "location" {
   default     = "eastus"
 }
 
+variable "webapp_dotnet_version" {
+  type        = string
+  description = "Dotnet runtime for Azure Linux Web App application stack."
+  default     = "10.0"
+}
+
+variable "function_dotnet_version" {
+  type        = string
+  description = "Dotnet runtime for Azure Linux Function App application stack."
+  default     = "10.0"
+}
+
 variable "sql_admin_login" {
   type        = string
   description = "SQL admin login."
@@ -25,9 +37,9 @@ variable "sql_admin_password" {
   sensitive   = true
 }
 
-variable "sql_connection_string" {
+variable "sql_connection_setting_value" {
   type        = string
-  description = "Azure SQL connection string used by the function app."
+  description = "Function app setting value for SqlConnectionString (prefer a Key Vault reference)."
   sensitive   = true
 }
 

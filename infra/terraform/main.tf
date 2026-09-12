@@ -34,7 +34,7 @@ resource "azurerm_linux_web_app" "frontend" {
 
   site_config {
     application_stack {
-      dotnet_version = "10.0"
+      dotnet_version = var.webapp_dotnet_version
     }
   }
 
@@ -52,22 +52,38 @@ resource "azurerm_storage_account" "function_storage" {
 }
 
 resource "azurerm_linux_function_app" "function" {
-  name                       = "${var.name_prefix}-function"
-  location                   = azurerm_resource_group.remind.location
-  resource_group_name        = azurerm_resource_group.remind.name
-  service_plan_id            = azurerm_service_plan.app_plan.id
-  storage_account_name       = azurerm_storage_account.function_storage.name
-  storage_account_access_key = azurerm_storage_account.function_storage.primary_access_key
+  name                          = "${var.name_prefix}-function"
+  location                      = azurerm_resource_group.remind.location
+  resource_group_name           = azurerm_resource_group.remind.name
+  service_plan_id               = azurerm_service_plan.app_plan.id
+  storage_account_name          = azurerm_storage_account.function_storage.name
+  storage_uses_managed_identity = true
+
+  identity {
+    type = "SystemAssigned"
+  }
 
   site_config {
     application_stack {
-      dotnet_version = "10.0"
+      dotnet_version = var.function_dotnet_version
     }
   }
 
   app_settings = {
-    SqlConnectionString = var.sql_connection_string
+    SqlConnectionString = var.sql_connection_setting_value
   }
+}
+
+resource "azurerm_role_assignment" "function_blob" {
+  scope                = azurerm_storage_account.function_storage.id
+  role_definition_name = "Storage Blob Data Owner"
+  principal_id         = azurerm_linux_function_app.function.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "function_queue" {
+  scope                = azurerm_storage_account.function_storage.id
+  role_definition_name = "Storage Queue Data Contributor"
+  principal_id         = azurerm_linux_function_app.function.identity[0].principal_id
 }
 
 resource "azurerm_mssql_server" "sql" {
