@@ -17,6 +17,52 @@ public class SaveDataPointFunctionTests
     }
 
     [Fact]
+    public async Task HandleAsync_ReturnsInvalidPayload_WhenPayloadIsNull()
+    {
+        var function = CreateFunction(_ => Task.CompletedTask);
+
+        var outcome = await function.HandleAsync(null, CancellationToken.None);
+
+        Assert.Same(SaveDataPointOutcome.InvalidPayload, outcome);
+    }
+
+    [Fact]
+    public async Task HandleAsync_ReturnsInvalidPayload_WhenDescriptionIsBlank()
+    {
+        var function = CreateFunction(_ => Task.CompletedTask);
+        var request = CreateValidRequest();
+        request.Description = " ";
+
+        var outcome = await function.HandleAsync(request, CancellationToken.None);
+
+        Assert.Same(SaveDataPointOutcome.InvalidPayload, outcome);
+    }
+
+    [Fact]
+    public async Task HandleAsync_ReturnsInvalidPayload_WhenEventDateIsNull()
+    {
+        var function = CreateFunction(_ => Task.CompletedTask);
+        var request = CreateValidRequest();
+        request.EventDate = null;
+
+        var outcome = await function.HandleAsync(request, CancellationToken.None);
+
+        Assert.Same(SaveDataPointOutcome.InvalidPayload, outcome);
+    }
+
+    [Fact]
+    public async Task HandleAsync_ReturnsInvalidPayload_WhenEventDateIsDefault()
+    {
+        var function = CreateFunction(_ => Task.CompletedTask);
+        var request = CreateValidRequest();
+        request.EventDate = default;
+
+        var outcome = await function.HandleAsync(request, CancellationToken.None);
+
+        Assert.Same(SaveDataPointOutcome.InvalidPayload, outcome);
+    }
+
+    [Fact]
     public async Task HandleAsync_ReturnsMissingConnectionString_WhenConfigurationIsMissing()
     {
         var function = CreateFunction(_ => Task.CompletedTask, connectionString: null);
