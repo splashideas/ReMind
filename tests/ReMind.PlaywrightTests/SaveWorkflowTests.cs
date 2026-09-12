@@ -190,19 +190,27 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
 
     private static async Task CreateDatabaseAsync(string connectionString, string databaseName, string repoRoot)
     {
+        if (string.IsNullOrWhiteSpace(databaseName) ||
+            databaseName.Any(static character => !char.IsAsciiLetterOrDigit(character) && character != '_'))
+        {
+            throw new InvalidOperationException("Playwright database names must use only letters, digits, and underscores.");
+        }
+
         var masterConnectionString = new SqlConnectionStringBuilder(connectionString)
         {
             InitialCatalog = "master"
         }.ConnectionString;
+        var databaseNameLiteral = databaseName.Replace("'", "''", StringComparison.Ordinal);
+        var databaseNameIdentifier = databaseName.Replace("]", "]]", StringComparison.Ordinal);
 
         await using (var masterConnection = new SqlConnection(masterConnectionString))
         {
             await masterConnection.OpenAsync();
             await using var createDb = masterConnection.CreateCommand();
             createDb.CommandText = $"""
-                                    IF DB_ID(N'{databaseName}') IS NULL
+                                    IF DB_ID(N'{databaseNameLiteral}') IS NULL
                                     BEGIN
-                                        CREATE DATABASE [{databaseName}];
+                                        CREATE DATABASE [{databaseNameIdentifier}];
                                     END
                                     """;
             await createDb.ExecuteNonQueryAsync();
@@ -227,10 +235,41 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
         EnsureCommandAvailable("func", "Azure Functions Core Tools (func) is required to run the Playwright save workflow tests.");
 
         var projectPath = Path.Join(repoRoot, "src", "ReMind.Functions");
+        Exception? lastPortBindingException = null;
+
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            using var portReservation = ReserveLoopbackPort();
+
+            try
+            {
+                return await StartFunctionsAsync(
+                    projectPath,
+                    ((IPEndPoint)portReservation.LocalEndpoint).Port,
+                    sqlConnectionString,
+                    storageConnectionString,
+                    functionsSecretsPath,
+                    portReservation);
+            }
+            catch (Exception ex) when (attempt < 4 && IsPortBindingFailure(ex))
+            {
+                lastPortBindingException = ex;
+            }
+        }
+
+        throw new InvalidOperationException("Failed to acquire a usable Functions host port.", lastPortBindingException);
+    }
+
+    private static async Task<(Process Process, string BaseUrl)> StartFunctionsAsync(
+        string projectPath,
+        int port,
+        string sqlConnectionString,
+        string storageConnectionString,
+        string functionsSecretsPath,
+        TcpListener portReservation)
+    {
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var output = new StringBuilder();
-        using var portReservation = ReserveLoopbackPort();
-        var port = ((IPEndPoint)portReservation.LocalEndpoint).Port;
         var startInfo = new ProcessStartInfo("func", $"start --enableAuth --port {port}")
         {
             WorkingDirectory = projectPath,
@@ -618,6 +657,13 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
 
         File.WriteAllText(Path.Join(secretsPath, "host.json"), hostSecrets);
         File.WriteAllText(Path.Join(secretsPath, "SaveDataPoint.json"), functionSecrets);
+    }
+
+    private static bool IsPortBindingFailure(Exception exception)
+    {
+        var message = exception.ToString();
+        return message.Contains("Address already in use", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("Failed to bind to address", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string CreateLocalKey() => Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
