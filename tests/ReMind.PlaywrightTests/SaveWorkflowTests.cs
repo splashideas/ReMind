@@ -270,7 +270,7 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
     {
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var output = new StringBuilder();
-        var startInfo = new ProcessStartInfo("func", $"start --enableAuth --port {port}")
+        var startInfo = new ProcessStartInfo("func", $"start --port {port}")
         {
             WorkingDirectory = projectPath,
             UseShellExecute = false,
