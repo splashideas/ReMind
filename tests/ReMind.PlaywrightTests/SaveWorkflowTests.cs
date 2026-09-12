@@ -202,7 +202,7 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
         var started = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         var startInfo = new ProcessStartInfo(
             "dotnet",
-            $"run --no-build --no-launch-profile --project \"{projectPath}\"")
+            $"run --no-launch-profile --project \"{projectPath}\"")
         {
             WorkingDirectory = Path.GetDirectoryName(projectPath)!,
             UseShellExecute = false,
