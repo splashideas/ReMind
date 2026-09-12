@@ -14,7 +14,8 @@ public class IndexModelTests
     [Fact]
     public async Task OnPostAsync_ReturnsPage_WhenModelStateIsInvalid()
     {
-        var model = CreateModel(_ => throw new InvalidOperationException("Request should not be sent."));
+var (model, client) = CreateModel(_ => throw new InvalidOperationException("Request should not be sent."));
+        using var _ = client;
         model.ModelState.AddModelError("Input.Location", "Required");
 
         var result = await model.OnPostAsync();
