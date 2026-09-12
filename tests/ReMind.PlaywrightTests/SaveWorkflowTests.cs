@@ -289,7 +289,7 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
         {
             if (File.Exists(Path.Combine(directory.FullName, "ReMind.sln")))
             {
-                return Path.Combine(directory.FullName, "src", "ReMind.Frontend", "ReMind.Frontend.csproj");
+                return Path.Join(directory.FullName, "src", "ReMind.Frontend", "ReMind.Frontend.csproj");
             }
 
             directory = directory.Parent;
