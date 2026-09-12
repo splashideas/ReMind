@@ -261,6 +261,7 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
     private static async Task WaitForUrlAsync(string url)
     {
         using var client = new HttpClient();
+        HttpRequestException? lastHttpRequestException = null;
 
         for (var attempt = 0; attempt < 60; attempt++)
         {
@@ -272,14 +273,17 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
                     return;
                 }
             }
-            catch (HttpRequestException)
+            catch (HttpRequestException ex)
             {
+                lastHttpRequestException = ex;
             }
 
             await Task.Delay(500);
         }
 
-        throw new TimeoutException($"Timed out waiting for {url}.");
+        throw lastHttpRequestException is null
+            ? new TimeoutException($"Timed out waiting for {url}.")
+            : new TimeoutException($"Timed out waiting for {url}.", lastHttpRequestException);
     }
 
     private static string GetFrontendProjectPath()
