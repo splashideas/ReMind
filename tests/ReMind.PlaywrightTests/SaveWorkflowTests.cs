@@ -91,12 +91,6 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
         var fixtureSuffix = Guid.NewGuid().ToString("N");
         var sqlContainerName = $"remind-playwright-sql-{fixtureSuffix}";
         var azuriteContainerName = $"remind-playwright-azurite-{fixtureSuffix}";
-        var sqlPort = GetFreePort();
-        var azuriteBlobPort = GetFreePort();
-        var azuriteQueuePort = GetFreePort();
-        var azuriteTablePort = GetFreePort();
-        var functionsPort = GetFreePort();
-
         _functionsSecretsPath = Path.Join(Path.GetTempPath(), $"remind-playwright-secrets-{fixtureSuffix}");
         CreateFunctionsSecrets(_functionsSecretsPath, LocalFunctionKey);
 
@@ -107,7 +101,7 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
                 "--name", sqlContainerName,
                 "-e", "ACCEPT_EULA=Y",
                 "-e", $"MSSQL_SA_PASSWORD={SqlSaPassword}",
-                "-p", $"127.0.0.1:{sqlPort}:1433",
+                "-p", "127.0.0.1::1433",
                 SqlImage
             ]);
 
@@ -116,11 +110,16 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
             [
                 "run", "-d", "--rm",
                 "--name", azuriteContainerName,
-                "-p", $"127.0.0.1:{azuriteBlobPort}:10000",
-                "-p", $"127.0.0.1:{azuriteQueuePort}:10001",
-                "-p", $"127.0.0.1:{azuriteTablePort}:10002",
+                "-p", "127.0.0.1::10000",
+                "-p", "127.0.0.1::10001",
+                "-p", "127.0.0.1::10002",
                 AzuriteImage
             ]);
+
+        var sqlPort = await GetPublishedPortAsync(_sqlContainerId, 1433);
+        var azuriteBlobPort = await GetPublishedPortAsync(_azuriteContainerId, 10000);
+        var azuriteQueuePort = await GetPublishedPortAsync(_azuriteContainerId, 10001);
+        var azuriteTablePort = await GetPublishedPortAsync(_azuriteContainerId, 10002);
 
         DatabaseConnectionString = BuildSqlConnectionString(sqlPort, "ReMindPlaywright");
 
@@ -137,7 +136,6 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
 
         (_functionsProcess, var functionsBaseUrl) = await StartFunctionsAsync(
             repoRoot,
-            functionsPort,
             DatabaseConnectionString,
             storageConnectionString,
             _functionsSecretsPath);
@@ -220,6 +218,34 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
 
     private static async Task<(Process Process, string BaseUrl)> StartFunctionsAsync(
         string repoRoot,
+        string sqlConnectionString,
+        string storageConnectionString,
+        string functionsSecretsPath)
+    {
+        Exception? lastPortBindingException = null;
+
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            try
+            {
+                return await StartFunctionsAsync(
+                    repoRoot,
+                    GetFreePort(),
+                    sqlConnectionString,
+                    storageConnectionString,
+                    functionsSecretsPath);
+            }
+            catch (Exception ex) when (attempt < 4 && IsPortBindingFailure(ex))
+            {
+                lastPortBindingException = ex;
+            }
+        }
+
+        throw new InvalidOperationException("Failed to acquire a usable Functions host port.", lastPortBindingException);
+    }
+
+    private static async Task<(Process Process, string BaseUrl)> StartFunctionsAsync(
+        string repoRoot,
         int port,
         string sqlConnectionString,
         string storageConnectionString,
@@ -230,7 +256,7 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
         var projectPath = Path.Join(repoRoot, "src", "ReMind.Functions");
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var output = new StringBuilder();
-        var startInfo = new ProcessStartInfo("func", $"start --enable-auth --port {port}")
+        var startInfo = new ProcessStartInfo("func", $"start --enableAuth --port {port}")
         {
             WorkingDirectory = projectPath,
             UseShellExecute = false,
@@ -519,6 +545,24 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
         return stdout;
     }
 
+    private static async Task<int> GetPublishedPortAsync(string containerId, int containerPort)
+    {
+        var portOutput = (await RunDockerAsync(["port", containerId, containerPort.ToString()])).Trim();
+        var portMapping = portOutput
+            .Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault();
+
+        var separatorIndex = portMapping?.LastIndexOf(':') ?? -1;
+        if (separatorIndex < 0 ||
+            !int.TryParse(portMapping![(separatorIndex + 1)..], out var publishedPort))
+        {
+            throw new InvalidOperationException(
+                $"Could not determine the published port for container '{containerId}' port {containerPort}.");
+        }
+
+        return publishedPort;
+    }
+
     private static void EnsureCommandAvailable(string command, string message)
     {
         try
@@ -579,6 +623,13 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
 
         File.WriteAllText(Path.Join(secretsPath, "host.json"), hostSecrets);
         File.WriteAllText(Path.Join(secretsPath, "SaveDataPoint.json"), functionSecrets);
+    }
+
+    private static bool IsPortBindingFailure(Exception exception)
+    {
+        var message = exception.ToString();
+        return message.Contains("Address already in use", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("Failed to bind to address", StringComparison.OrdinalIgnoreCase);
     }
 
     private static int GetFreePort()
