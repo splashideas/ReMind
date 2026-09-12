@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using Microsoft.Data.SqlClient;
 using Microsoft.Playwright;
@@ -71,13 +72,14 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
     private const string SqlImage = "mcr.microsoft.com/mssql/server:2022-latest";
     private const string AzuriteImage = "mcr.microsoft.com/azure-storage/azurite:latest";
     private const string SqlSaPassword = "ReMind_Test_Password_123";
+    private const string LocalFunctionKey = "remind-playwright-local-function-key";
 
     private Process? _functionsProcess;
     private Process? _frontendProcess;
     private IPlaywright? _playwright;
     private string? _sqlContainerId;
     private string? _azuriteContainerId;
-    private readonly string _containerSuffix = Guid.NewGuid().ToString("N")[..8];
+    private string? _functionsSecretsPath;
 
     public IBrowser Browser { get; private set; } = null!;
     public string FrontendBaseUrl { get; private set; } = string.Empty;
@@ -86,8 +88,17 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
     public async Task InitializeAsync()
     {
         var repoRoot = GetRepositoryRoot();
-        var sqlContainerName = $"remind-playwright-sql-{_containerSuffix}";
-        var azuriteContainerName = $"remind-playwright-azurite-{_containerSuffix}";
+        var fixtureSuffix = Guid.NewGuid().ToString("N");
+        var sqlContainerName = $"remind-playwright-sql-{fixtureSuffix}";
+        var azuriteContainerName = $"remind-playwright-azurite-{fixtureSuffix}";
+        var sqlPort = GetFreePort();
+        var azuriteBlobPort = GetFreePort();
+        var azuriteQueuePort = GetFreePort();
+        var azuriteTablePort = GetFreePort();
+        var functionsPort = GetFreePort();
+
+        _functionsSecretsPath = Path.Join(Path.GetTempPath(), $"remind-playwright-secrets-{fixtureSuffix}");
+        CreateFunctionsSecrets(_functionsSecretsPath, LocalFunctionKey);
 
         _sqlContainerId = await StartContainerAsync(
             sqlContainerName,
@@ -96,7 +107,7 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
                 "--name", sqlContainerName,
                 "-e", "ACCEPT_EULA=Y",
                 "-e", $"MSSQL_SA_PASSWORD={SqlSaPassword}",
-                "-p", "127.0.0.1::1433",
+                "-p", $"127.0.0.1:{sqlPort}:1433",
                 SqlImage
             ]);
 
@@ -105,16 +116,11 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
             [
                 "run", "-d", "--rm",
                 "--name", azuriteContainerName,
-                "-p", "127.0.0.1::10000",
-                "-p", "127.0.0.1::10001",
-                "-p", "127.0.0.1::10002",
+                "-p", $"127.0.0.1:{azuriteBlobPort}:10000",
+                "-p", $"127.0.0.1:{azuriteQueuePort}:10001",
+                "-p", $"127.0.0.1:{azuriteTablePort}:10002",
                 AzuriteImage
             ]);
-
-        var sqlPort = await GetMappedPortAsync(_sqlContainerId, 1433);
-        var azuriteBlobPort = await GetMappedPortAsync(_azuriteContainerId, 10000);
-        var azuriteQueuePort = await GetMappedPortAsync(_azuriteContainerId, 10001);
-        var azuriteTablePort = await GetMappedPortAsync(_azuriteContainerId, 10002);
 
         DatabaseConnectionString = BuildSqlConnectionString(sqlPort, "ReMindPlaywright");
 
@@ -131,10 +137,14 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
 
         (_functionsProcess, var functionsBaseUrl) = await StartFunctionsAsync(
             repoRoot,
+            functionsPort,
             DatabaseConnectionString,
-            storageConnectionString);
+            storageConnectionString,
+            _functionsSecretsPath);
 
-        (_frontendProcess, var frontendBaseUrl) = await StartFrontendAsync(repoRoot, functionsBaseUrl);
+        (_frontendProcess, var frontendBaseUrl) = await StartFrontendAsync(
+            repoRoot,
+            $"{functionsBaseUrl}/api/datapoints?code={LocalFunctionKey}");
         FrontendBaseUrl = frontendBaseUrl;
         await WaitForUrlAsync(FrontendBaseUrl);
 
@@ -159,6 +169,11 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
 
         await StopContainerAsync(_azuriteContainerId);
         await StopContainerAsync(_sqlContainerId);
+
+        if (!string.IsNullOrWhiteSpace(_functionsSecretsPath) && Directory.Exists(_functionsSecretsPath))
+        {
+            Directory.Delete(_functionsSecretsPath, recursive: true);
+        }
     }
 
     private static string BuildSqlConnectionString(int port, string database) =>
@@ -169,7 +184,8 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
             UserID = "sa",
             Password = SqlSaPassword,
             TrustServerCertificate = true,
-            Encrypt = false
+            Encrypt = false,
+            ConnectTimeout = 1
         }.ConnectionString;
 
     private static async Task CreateDatabaseAsync(string connectionString, string repoRoot)
@@ -204,15 +220,17 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
 
     private static async Task<(Process Process, string BaseUrl)> StartFunctionsAsync(
         string repoRoot,
+        int port,
         string sqlConnectionString,
-        string storageConnectionString)
+        string storageConnectionString,
+        string functionsSecretsPath)
     {
         EnsureCommandAvailable("func", "Azure Functions Core Tools (func) is required to run the Playwright save workflow tests.");
 
         var projectPath = Path.Join(repoRoot, "src", "ReMind.Functions");
-        var started = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var output = new StringBuilder();
-        var startInfo = new ProcessStartInfo("func", "start --port 0")
+        var startInfo = new ProcessStartInfo("func", $"start --enable-auth --port {port}")
         {
             WorkingDirectory = projectPath,
             UseShellExecute = false,
@@ -222,6 +240,8 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
 
         startInfo.Environment["FUNCTIONS_WORKER_RUNTIME"] = "dotnet-isolated";
         startInfo.Environment["AzureWebJobsStorage"] = storageConnectionString;
+        startInfo.Environment["AzureWebJobsSecretStorageType"] = "files";
+        startInfo.Environment["FUNCTIONS_SECRETS_PATH"] = functionsSecretsPath;
         startInfo.Environment["SqlConnectionString"] = sqlConnectionString;
         startInfo.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
 
@@ -253,9 +273,10 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
                 : -1;
             var baseUrlStartIndex = Math.Max(httpIndex, httpsIndex);
             if (baseUrlStartIndex >= 0 &&
-                Uri.TryCreate(data[baseUrlStartIndex..routeIndex], UriKind.Absolute, out var baseUri))
+                Uri.TryCreate(data[baseUrlStartIndex..routeIndex], UriKind.Absolute, out _) ||
+                data.Contains("Worker process started and initialized.", StringComparison.Ordinal))
             {
-                started.TrySetResult(baseUri.GetLeftPart(UriPartial.Authority));
+                started.TrySetResult();
             }
         }
 
@@ -282,10 +303,10 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
                 started.TrySetException(new TimeoutException(
                     "Timed out waiting for Functions host startup." + Environment.NewLine + output)));
 
-            var baseUrl = await started.Task;
-            await WaitForUrlAsync($"{baseUrl}/", allowNonSuccessStatus: true);
+            await started.Task;
+            await WaitForUrlAsync($"http://127.0.0.1:{port}/", allowNonSuccessStatus: true);
 
-            return (process, baseUrl);
+            return (process, $"http://127.0.0.1:{port}");
         }
         catch
         {
@@ -296,7 +317,7 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
 
     private static async Task<(Process Process, string BaseUrl)> StartFrontendAsync(
         string repoRoot,
-        string functionsBaseUrl)
+        string saveDataPointFunctionUrl)
     {
         var projectPath = Path.Join(repoRoot, "src", "ReMind.Frontend", "ReMind.Frontend.csproj");
         var configuration = GetBuildConfiguration();
@@ -313,7 +334,7 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
 
         startInfo.Environment["ASPNETCORE_URLS"] = "http://127.0.0.1:0";
         startInfo.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
-        startInfo.Environment["SaveDataPointFunctionUrl"] = $"{functionsBaseUrl}/api/datapoints";
+        startInfo.Environment["SaveDataPointFunctionUrl"] = saveDataPointFunctionUrl;
 
         var process = new Process
         {
@@ -442,26 +463,6 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
         await RunDockerAsync(["rm", "-f", containerId], allowFailure: true);
     }
 
-    private static async Task<int> GetMappedPortAsync(string containerId, int containerPort)
-    {
-        var mapping = (await RunDockerAsync(["port", containerId, containerPort.ToString()])).Trim();
-        if (string.IsNullOrWhiteSpace(mapping))
-        {
-            throw new InvalidOperationException(
-                $"No mapped host port found for container '{containerId}' port {containerPort}.");
-        }
-
-        var hostEndpoint = mapping.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)[0];
-        var separatorIndex = hostEndpoint.LastIndexOf(':');
-        if (separatorIndex < 0 || !int.TryParse(hostEndpoint[(separatorIndex + 1)..], out var hostPort))
-        {
-            throw new InvalidOperationException(
-                $"Unable to parse mapped host port from Docker output '{hostEndpoint}'.");
-        }
-
-        return hostPort;
-    }
-
     private static async Task StopProcessAsync(Process? process)
     {
         if (process is null)
@@ -538,6 +539,60 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
         catch (Exception ex) when (ex is not InvalidOperationException)
         {
             throw new InvalidOperationException(message, ex);
+        }
+    }
+
+    private static void CreateFunctionsSecrets(string secretsPath, string functionKey)
+    {
+        Directory.CreateDirectory(secretsPath);
+
+        const string masterKey = "remind-playwright-local-master-key";
+
+        var hostSecrets = $$"""
+                            {
+                              "masterKey": {
+                                "name": "master",
+                                "value": "{{masterKey}}",
+                                "encrypted": false
+                              },
+                              "functionKeys": [
+                                {
+                                  "name": "default",
+                                  "value": "{{functionKey}}",
+                                  "encrypted": false
+                                }
+                              ],
+                              "systemKeys": []
+                            }
+                            """;
+
+        var functionSecrets = $$"""
+                                {
+                                  "keys": [
+                                    {
+                                      "name": "default",
+                                      "value": "{{functionKey}}",
+                                      "encrypted": false
+                                    }
+                                  ]
+                                }
+                                """;
+
+        File.WriteAllText(Path.Join(secretsPath, "host.json"), hostSecrets);
+        File.WriteAllText(Path.Join(secretsPath, "SaveDataPoint.json"), functionSecrets);
+    }
+
+    private static int GetFreePort()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            return ((IPEndPoint)listener.LocalEndpoint).Port;
+        }
+        finally
+        {
+            listener.Stop();
         }
     }
 
