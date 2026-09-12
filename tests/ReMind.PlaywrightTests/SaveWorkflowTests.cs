@@ -441,21 +441,18 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
             return;
         }
 
+        using var ownedProcess = process;
         try
         {
-            if (!process.HasExited)
+            if (!ownedProcess.HasExited)
             {
-                process.Kill(entireProcessTree: true);
-                await process.WaitForExitAsync();
+                ownedProcess.Kill(entireProcessTree: true);
+                await ownedProcess.WaitForExitAsync();
             }
         }
         catch (InvalidOperationException)
         {
             // Process already exited.
-        }
-        finally
-        {
-            process.Dispose();
         }
     }
 
