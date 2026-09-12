@@ -1,4 +1,4 @@
-name: build-validate
+name: dotnet-build
 
 on:
   pull_request:
@@ -31,18 +31,3 @@ jobs:
         run: pwsh tests/ReMind.PlaywrightTests/bin/Release/net10.0/playwright.ps1 install chromium
       - name: Test solution
         run: dotnet test ReMind.sln --no-build -c Release
-
-  terraform-validate:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: infra/terraform
-    steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
-      - name: Terraform fmt check
-        run: terraform fmt -check
-      - name: Terraform init
-        run: terraform init -backend=false
-      - name: Terraform validate
-        run: terraform validate

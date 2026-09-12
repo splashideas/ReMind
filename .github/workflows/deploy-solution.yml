@@ -1,4 +1,4 @@
-name: deploy
+name: deploy-solution
 
 on:
   workflow_dispatch:
@@ -7,27 +7,8 @@ permissions:
   contents: read
 
 jobs:
-  deploy-infrastructure:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: infra/terraform
-    steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
-      - uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-      - name: Terraform init
-        run: terraform init
-      - name: Terraform plan
-        run: terraform plan -out=tfplan
-      - name: Terraform apply
-        run: terraform apply -auto-approve tfplan
-
   deploy-solution:
     runs-on: ubuntu-latest
-    needs: deploy-infrastructure
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
