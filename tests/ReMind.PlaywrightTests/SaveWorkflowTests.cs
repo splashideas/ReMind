@@ -93,8 +93,11 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
         var databaseName = $"ReMindPlaywright_{fixtureSuffix}";
         var localFunctionKey = CreateLocalKey();
 
-        _functionsSecretsPath = Path.Join(Path.GetTempPath(), $"remind-playwright-secrets-{fixtureSuffix}");
-        CreateFunctionsSecrets(_functionsSecretsPath, localFunctionKey, CreateLocalKey());
+        // Core Tools resolves SecretsPath as Path.Combine(Path.GetTempPath(), "secrets", "functions", "secrets").
+        // Give the Functions process an isolated temp root so our keys are loaded under --enableAuth.
+        _functionsSecretsPath = Path.Join(Path.GetTempPath(), $"remind-playwright-temp-{fixtureSuffix}");
+        var secretsDirectory = Path.Join(_functionsSecretsPath, "secrets", "functions", "secrets");
+        CreateFunctionsSecrets(secretsDirectory, localFunctionKey, CreateLocalKey());
 
         _sqlContainerId = await StartContainerAsync(
             sqlContainerName,
@@ -144,7 +147,8 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
 
         (_frontendProcess, var frontendBaseUrl) = await StartFrontendAsync(
             repoRoot,
-            $"{functionsBaseUrl}/api/datapoints?code={localFunctionKey}");
+            $"{functionsBaseUrl}/api/datapoints",
+            localFunctionKey);
         FrontendBaseUrl = frontendBaseUrl;
         await WaitForUrlAsync(FrontendBaseUrl);
 
@@ -230,7 +234,7 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
         string repoRoot,
         string sqlConnectionString,
         string storageConnectionString,
-        string functionsSecretsPath)
+        string functionsTempPath)
     {
         EnsureCommandAvailable("func", "Azure Functions Core Tools (func) is required to run the Playwright save workflow tests.");
 
@@ -248,7 +252,7 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
                     ((IPEndPoint)portReservation.LocalEndpoint).Port,
                     sqlConnectionString,
                     storageConnectionString,
-                    functionsSecretsPath,
+                    functionsTempPath,
                     portReservation);
             }
             catch (Exception ex) when (attempt < 4 && IsPortBindingFailure(ex))
@@ -265,12 +269,12 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
         int port,
         string sqlConnectionString,
         string storageConnectionString,
-        string functionsSecretsPath,
+        string functionsTempPath,
         TcpListener portReservation)
     {
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var output = new StringBuilder();
-        var startInfo = new ProcessStartInfo("func", $"start --port {port}")
+        var startInfo = new ProcessStartInfo("func", $"start --enableAuth --port {port}")
         {
             WorkingDirectory = projectPath,
             UseShellExecute = false,
@@ -281,7 +285,10 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
         startInfo.Environment["FUNCTIONS_WORKER_RUNTIME"] = "dotnet-isolated";
         startInfo.Environment["AzureWebJobsStorage"] = storageConnectionString;
         startInfo.Environment["AzureWebJobsSecretStorageType"] = "files";
-        startInfo.Environment["FUNCTIONS_SECRETS_PATH"] = functionsSecretsPath;
+        // Core Tools SecretsPath is under Path.GetTempPath(); isolate via process temp env vars.
+        startInfo.Environment["TMPDIR"] = functionsTempPath;
+        startInfo.Environment["TMP"] = functionsTempPath;
+        startInfo.Environment["TEMP"] = functionsTempPath;
         startInfo.Environment["SqlConnectionString"] = sqlConnectionString;
         startInfo.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
 
@@ -358,7 +365,8 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
 
     private static async Task<(Process Process, string BaseUrl)> StartFrontendAsync(
         string repoRoot,
-        string saveDataPointFunctionUrl)
+        string saveDataPointFunctionUrl,
+        string saveDataPointFunctionKey)
     {
         var projectPath = Path.Join(repoRoot, "src", "ReMind.Frontend", "ReMind.Frontend.csproj");
         var configuration = GetBuildConfiguration();
@@ -376,6 +384,7 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
         startInfo.Environment["ASPNETCORE_URLS"] = "http://127.0.0.1:0";
         startInfo.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
         startInfo.Environment["SaveDataPointFunctionUrl"] = saveDataPointFunctionUrl;
+        startInfo.Environment["SaveDataPointFunctionKey"] = saveDataPointFunctionKey;
 
         var process = new Process
         {
