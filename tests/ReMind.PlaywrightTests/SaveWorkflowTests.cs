@@ -518,7 +518,7 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
 
     private static int GetFreePort()
     {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         try
         {
