@@ -64,7 +64,9 @@ az ad sp create-for-rbac \
 Grant the same principal permission to read/write state and plan blobs (Azure AD auth, no storage account keys in CI):
 
 ```bash
-SP_OBJECT_ID=$(az ad sp list --display-name "$SP_NAME" --query "[0].id" -o tsv)
+# Set this from clientId in the saved AZURE_CREDENTIALS JSON.
+SP_CLIENT_ID="<appId>"
+SP_OBJECT_ID=$(az ad sp show --id "$SP_CLIENT_ID" --query id -o tsv)
 SA_ID=$(az storage account show --name "$SA_NAME" --resource-group "$RG_NAME" --query id -o tsv)
 
 az role assignment create \
