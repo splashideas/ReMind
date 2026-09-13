@@ -5,22 +5,143 @@ on:
 
 permissions:
   contents: read
+  id-token: write
+
+env:
+  TF_WORKING_DIR: infra/terraform
+  # Pin so plan and apply use the same binary format for the saved plan file.
+  TF_VERSION: 1.9.8
+  TF_PLAN_BLOB_NAME: plans/remind-${{ github.run_id }}.tfplan
 
 jobs:
-  deploy-infrastructure:
+  plan:
+    name: Terraform plan
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: infra/terraform
     steps:
       - uses: actions/checkout@v4
+
       - uses: hashicorp/setup-terraform@v3
-      - uses: azure/login@v2
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          # Disable wrapper so the plan file is a real binary artifact for apply.
+          terraform_wrapper: false
+
+      - name: Azure login
+        uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
-      - name: Terraform init
-        run: terraform init
+
+      - &export-terraform-arm-credentials
+        name: Export Terraform ARM credentials
+        env:
+          AZURE_CREDENTIALS_JSON: ${{ secrets.AZURE_CREDENTIALS }}
+        run: |
+          ARM_CLIENT_ID=$(jq -r '.clientId' <<<"$AZURE_CREDENTIALS_JSON")
+          ARM_CLIENT_SECRET=$(jq -r '.clientSecret' <<<"$AZURE_CREDENTIALS_JSON")
+          ARM_SUBSCRIPTION_ID=$(jq -r '.subscriptionId' <<<"$AZURE_CREDENTIALS_JSON")
+          ARM_TENANT_ID=$(jq -r '.tenantId' <<<"$AZURE_CREDENTIALS_JSON")
+          echo "::add-mask::$ARM_CLIENT_ID"
+          echo "::add-mask::$ARM_CLIENT_SECRET"
+          echo "::add-mask::$ARM_SUBSCRIPTION_ID"
+          echo "::add-mask::$ARM_TENANT_ID"
+          {
+            echo "ARM_CLIENT_ID=$ARM_CLIENT_ID"
+            echo "ARM_CLIENT_SECRET=$ARM_CLIENT_SECRET"
+            echo "ARM_SUBSCRIPTION_ID=$ARM_SUBSCRIPTION_ID"
+            echo "ARM_TENANT_ID=$ARM_TENANT_ID"
+          } >> "$GITHUB_ENV"
+
+      - name: Terraform init (remote state)
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TF_BACKEND_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_BACKEND_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_BACKEND_STATE_CONTAINER }}" \
+            -backend-config="key=${{ vars.TF_BACKEND_STATE_KEY }}" \
+            -backend-config="use_azuread_auth=true"
+
       - name: Terraform plan
-        run: terraform plan -out=tfplan
+        env:
+          # Repository variables / secrets mapped to Terraform input variables.
+          TF_VAR_name_prefix: ${{ vars.TF_VAR_NAME_PREFIX }}
+          TF_VAR_resource_group_name: ${{ vars.TF_VAR_RESOURCE_GROUP_NAME }}
+          TF_VAR_location: ${{ vars.TF_VAR_LOCATION }}
+          TF_VAR_sql_admin_login: ${{ vars.TF_VAR_SQL_ADMIN_LOGIN }}
+          TF_VAR_sql_aad_admin_login: ${{ vars.TF_VAR_SQL_AAD_ADMIN_LOGIN }}
+          TF_VAR_sql_aad_admin_object_id: ${{ vars.TF_VAR_SQL_AAD_ADMIN_OBJECT_ID }}
+          TF_VAR_sql_admin_password: ${{ secrets.TF_VAR_SQL_ADMIN_PASSWORD }}
+          TF_VAR_sql_connection_setting_value: ${{ secrets.TF_VAR_SQL_CONNECTION_SETTING_VALUE }}
+        run: |
+          # Drop empty optional TF_VAR_* values so Terraform defaults still apply.
+          for v in TF_VAR_location; do
+            if [ -z "${!v}" ]; then unset "$v"; fi
+          done
+          terraform plan -input=false -out=tfplan
+
+      - name: Upload plan file to Azure Storage
+        run: |
+          az storage blob upload \
+            --account-name "${{ vars.TF_BACKEND_STORAGE_ACCOUNT }}" \
+            --container-name "${{ vars.TF_BACKEND_PLAN_CONTAINER }}" \
+            --name "${{ env.TF_PLAN_BLOB_NAME }}" \
+            --file tfplan \
+            --auth-mode login \
+            --overwrite true
+
+  apply:
+    name: Terraform apply
+    needs: plan
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKING_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - *export-terraform-arm-credentials
+
+      - name: Terraform init (remote state)
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TF_BACKEND_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_BACKEND_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TF_BACKEND_STATE_CONTAINER }}" \
+            -backend-config="key=${{ vars.TF_BACKEND_STATE_KEY }}" \
+            -backend-config="use_azuread_auth=true"
+
+      - name: Download plan file from Azure Storage
+        run: |
+          az storage blob download \
+            --account-name "${{ vars.TF_BACKEND_STORAGE_ACCOUNT }}" \
+            --container-name "${{ vars.TF_BACKEND_PLAN_CONTAINER }}" \
+            --name "${{ env.TF_PLAN_BLOB_NAME }}" \
+            --file tfplan \
+            --auth-mode login
+
       - name: Terraform apply
-        run: terraform apply -auto-approve tfplan
+        run: terraform apply -input=false -auto-approve tfplan
+
+      # Delete only after a successful apply so "Re-run failed jobs" can still
+      # download the plan. Deletion failures fail the job (no silent ignore);
+      # the storage lifecycle rule expires abandoned/cancelled plan blobs.
+      - name: Remove plan file from Azure Storage
+        if: success()
+        run: |
+          az storage blob delete \
+            --account-name "${{ vars.TF_BACKEND_STORAGE_ACCOUNT }}" \
+            --container-name "${{ vars.TF_BACKEND_PLAN_CONTAINER }}" \
+            --name "${{ env.TF_PLAN_BLOB_NAME }}" \
+            --auth-mode login
