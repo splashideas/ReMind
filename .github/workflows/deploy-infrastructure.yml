@@ -141,5 +141,4 @@ jobs:
             --account-name "${{ vars.TF_BACKEND_STORAGE_ACCOUNT }}" \
             --container-name "${{ vars.TF_BACKEND_PLAN_CONTAINER }}" \
             --name "${{ env.TF_PLAN_BLOB_NAME }}" \
-            --auth-mode login
-            || true
+            --auth-mode login || true
