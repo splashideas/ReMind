@@ -1,0 +1,12 @@
+# Copy to backend.hcl (gitignored) for local terraform init, or pass equivalent
+# -backend-config values in CI. The storage account must already exist and is
+# separate from app resources managed by this configuration.
+#
+#   cp backend.hcl.example backend.hcl
+#   terraform init -backend-config=backend.hcl
+
+resource_group_name  = "rg-remind-tfstate"
+storage_account_name = "stremindtfstate"
+container_name       = "tfstate"
+key                  = "remind/infrastructure.tfstate"
+use_azuread_auth     = true

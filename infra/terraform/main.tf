@@ -7,6 +7,10 @@ terraform {
       version = "~> 4.0"
     }
   }
+
+  # Partial backend config. Values are supplied at init time via
+  # -backend-config flags (CI) or a local backend.hcl (see backend.hcl.example).
+  backend "azurerm" {}
 }
 
 provider "azurerm" {

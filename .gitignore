@@ -11,6 +11,14 @@
 *.sln.docstates
 *.env
 
+# Local Terraform backend config and working files
+**/backend.hcl
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfplan
+**/tfplan
+
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
 
