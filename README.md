@@ -19,7 +19,7 @@ Remote **Terraform state** (`*.tfstate`) lives in one blob container. Saved **pl
 
 ### 1. Create the Terraform state storage account (one-time)
 
-Run these against the subscription that will host state (not necessarily the app subscription, but typically the same). Use names that match the GitHub variables you will set below.
+Run these against the single Azure subscription that hosts both Terraform state and the deployed app resources. This workflow uses one `AZURE_CREDENTIALS` subscription for the provider and backend, so state and app must share that subscription. Use names that match the GitHub variables you will set below.
 
 ```bash
 # Adjust names/location as needed
@@ -46,9 +46,10 @@ az storage container create --account-name "$SA_NAME" --name "$PLAN_CONTAINER" -
 
 ### 2. Create a service principal for GitHub Actions
 
-Prefer a credential scoped to the app subscription (Contributor or a tighter custom role) **and** data-plane access on the state account.
+Prefer a credential scoped to that same subscription (Contributor or a tighter custom role) **and** data-plane access on the state account. `subscriptionId` in `AZURE_CREDENTIALS` is the subscription Terraform uses for both backend access and resource deployment.
 
 ```bash
+# Must be the same subscription used for state storage above.
 SUBSCRIPTION_ID=$(az account show --query id -o tsv)
 SP_NAME=sp-remind-github-actions
 
