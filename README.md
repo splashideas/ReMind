@@ -42,6 +42,39 @@ az storage account create \
 
 az storage container create --account-name "$SA_NAME" --name "$STATE_CONTAINER" --auth-mode login
 az storage container create --account-name "$SA_NAME" --name "$PLAN_CONTAINER" --auth-mode login
+
+# Auto-delete saved plan blobs under the plans/ prefix after 7 days so cleanup
+# does not depend solely on the apply job (e.g. cancelled workflows).
+# prefixMatch is account-scoped and includes the container name.
+cat > /tmp/tfplan-lifecycle.json <<EOF
+{
+  "rules": [
+    {
+      "enabled": true,
+      "name": "delete-expired-tfplans",
+      "type": "Lifecycle",
+      "definition": {
+        "filters": {
+          "blobTypes": ["blockBlob"],
+          "prefixMatch": ["${PLAN_CONTAINER}/plans/"]
+        },
+        "actions": {
+          "baseBlob": {
+            "delete": {
+              "daysAfterModificationGreaterThan": 7
+            }
+          }
+        }
+      }
+    }
+  ]
+}
+EOF
+
+az storage account management-policy create \
+  --account-name "$SA_NAME" \
+  --resource-group "$RG_NAME" \
+  --policy @/tmp/tfplan-lifecycle.json
 ```
 
 ### 2. Create a service principal for GitHub Actions
@@ -138,10 +171,11 @@ GitHub → **Actions → deploy-infrastructure → Run workflow**.
 
 - Plan uploads `plans/remind-<run_id>.tfplan` to `TF_BACKEND_PLAN_CONTAINER`.
 - Apply downloads that blob, applies it, then deletes the plan blob.
+- A storage lifecycle policy also deletes blobs under the `plans/` prefix **7 days** after last modification, so a cancelled run cannot leave a plan blob indefinitely.
 - Ongoing resource state remains in `TF_BACKEND_STATE_CONTAINER` / `TF_BACKEND_STATE_KEY`.
 
 ### Security notes
 
 - Prefer OpenID Connect (federated credentials) instead of a long-lived client secret when you can; keep `id-token: write` and switch `azure/login` to `client-id` / `tenant-id` / `subscription-id` with a federated credential on the app registration.
-- Plan files can contain sensitive values — keep the plan container private and delete plans after apply (the workflow does this).
+- Plan files can contain sensitive values — keep the plan container private, delete plans after apply (the workflow does this), and rely on the **7-day** lifecycle rule on the `plans/` prefix as a backstop when apply never runs.
 - Lock down the state account with Azure AD only (`use_azuread_auth = true`), disable shared-key access when your org policy allows it, and restrict network access if runners have stable egress.
