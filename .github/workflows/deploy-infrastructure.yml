@@ -134,9 +134,11 @@ jobs:
       - name: Terraform apply
         run: terraform apply -input=false -auto-approve tfplan
 
+      # Delete only after a successful apply so "Re-run failed jobs" can still
+      # download the plan. Deletion failures fail the job (no silent ignore);
+      # the storage lifecycle rule expires abandoned/cancelled plan blobs.
       - name: Remove plan file from Azure Storage
-        if: always()
-        continue-on-error: true
+        if: success()
         run: |
           az storage blob delete \
             --account-name "${{ vars.TF_BACKEND_STORAGE_ACCOUNT }}" \

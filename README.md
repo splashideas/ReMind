@@ -128,7 +128,7 @@ In the repository: **Settings → Secrets and variables → Actions**.
 }
 ```
 
-`azure/login@v2` signs the Azure CLI in with these credentials; it does not create `ARM_*` variables. Configure Terraform authentication separately by exporting the service-principal fields as `ARM_CLIENT_ID`, `ARM_CLIENT_SECRET`, `ARM_SUBSCRIPTION_ID`, and `ARM_TENANT_ID`, or use Terraform's native OIDC authentication.
+`azure/login@v2` signs the Azure CLI in with these credentials for `az` commands (plan blob upload/download/delete). It does **not** export Terraform `ARM_*` variables. The `deploy-infrastructure` workflow then reads the same `AZURE_CREDENTIALS` JSON, masks the values, and exports `ARM_CLIENT_ID`, `ARM_CLIENT_SECRET`, `ARM_SUBSCRIPTION_ID`, and `ARM_TENANT_ID` into the job environment so the Terraform `azurerm` backend and provider authenticate directly. For local runs, either export those `ARM_*` variables yourself or use an interactive `az login` user session; native Terraform OIDC is an alternative if you replace the client-secret login path.
 
 **Additional secrets** (Terraform sensitive inputs used by plan/apply):
 
