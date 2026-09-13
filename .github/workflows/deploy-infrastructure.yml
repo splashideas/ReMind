@@ -17,11 +17,6 @@ jobs:
   plan:
     name: Terraform plan
     runs-on: ubuntu-latest
-    env:
-      ARM_CLIENT_ID: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientId }}
-      ARM_CLIENT_SECRET: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientSecret }}
-      ARM_SUBSCRIPTION_ID: ${{ fromJson(secrets.AZURE_CREDENTIALS).subscriptionId }}
-      ARM_TENANT_ID: ${{ fromJson(secrets.AZURE_CREDENTIALS).tenantId }}
     defaults:
       run:
         working-directory: infra/terraform
@@ -38,6 +33,25 @@ jobs:
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Export Terraform ARM credentials
+        env:
+          AZURE_CREDENTIALS_JSON: ${{ secrets.AZURE_CREDENTIALS }}
+        run: |
+          ARM_CLIENT_ID=$(jq -r '.clientId' <<<"$AZURE_CREDENTIALS_JSON")
+          ARM_CLIENT_SECRET=$(jq -r '.clientSecret' <<<"$AZURE_CREDENTIALS_JSON")
+          ARM_SUBSCRIPTION_ID=$(jq -r '.subscriptionId' <<<"$AZURE_CREDENTIALS_JSON")
+          ARM_TENANT_ID=$(jq -r '.tenantId' <<<"$AZURE_CREDENTIALS_JSON")
+          echo "::add-mask::$ARM_CLIENT_ID"
+          echo "::add-mask::$ARM_CLIENT_SECRET"
+          echo "::add-mask::$ARM_SUBSCRIPTION_ID"
+          echo "::add-mask::$ARM_TENANT_ID"
+          {
+            echo "ARM_CLIENT_ID=$ARM_CLIENT_ID"
+            echo "ARM_CLIENT_SECRET=$ARM_CLIENT_SECRET"
+            echo "ARM_SUBSCRIPTION_ID=$ARM_SUBSCRIPTION_ID"
+            echo "ARM_TENANT_ID=$ARM_TENANT_ID"
+          } >> "$GITHUB_ENV"
 
       - name: Terraform init (remote state)
         run: |
@@ -80,11 +94,6 @@ jobs:
     name: Terraform apply
     needs: plan
     runs-on: ubuntu-latest
-    env:
-      ARM_CLIENT_ID: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientId }}
-      ARM_CLIENT_SECRET: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientSecret }}
-      ARM_SUBSCRIPTION_ID: ${{ fromJson(secrets.AZURE_CREDENTIALS).subscriptionId }}
-      ARM_TENANT_ID: ${{ fromJson(secrets.AZURE_CREDENTIALS).tenantId }}
     defaults:
       run:
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -100,6 +109,25 @@ jobs:
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Export Terraform ARM credentials
+        env:
+          AZURE_CREDENTIALS_JSON: ${{ secrets.AZURE_CREDENTIALS }}
+        run: |
+          ARM_CLIENT_ID=$(jq -r '.clientId' <<<"$AZURE_CREDENTIALS_JSON")
+          ARM_CLIENT_SECRET=$(jq -r '.clientSecret' <<<"$AZURE_CREDENTIALS_JSON")
+          ARM_SUBSCRIPTION_ID=$(jq -r '.subscriptionId' <<<"$AZURE_CREDENTIALS_JSON")
+          ARM_TENANT_ID=$(jq -r '.tenantId' <<<"$AZURE_CREDENTIALS_JSON")
+          echo "::add-mask::$ARM_CLIENT_ID"
+          echo "::add-mask::$ARM_CLIENT_SECRET"
+          echo "::add-mask::$ARM_SUBSCRIPTION_ID"
+          echo "::add-mask::$ARM_TENANT_ID"
+          {
+            echo "ARM_CLIENT_ID=$ARM_CLIENT_ID"
+            echo "ARM_CLIENT_SECRET=$ARM_CLIENT_SECRET"
+            echo "ARM_SUBSCRIPTION_ID=$ARM_SUBSCRIPTION_ID"
+            echo "ARM_TENANT_ID=$ARM_TENANT_ID"
+          } >> "$GITHUB_ENV"
 
       - name: Terraform init (remote state)
         run: |
