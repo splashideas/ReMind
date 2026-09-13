@@ -94,7 +94,7 @@ In the repository: **Settings → Secrets and variables → Actions**.
 }
 ```
 
-`azure/login@v2` maps these into `ARM_*` environment variables that both the Azure CLI and the Terraform `azurerm` backend/provider use.
+`azure/login@v2` signs the Azure CLI in with these credentials; it does not create `ARM_*` variables. Configure Terraform authentication separately by exporting the service-principal fields as `ARM_CLIENT_ID`, `ARM_CLIENT_SECRET`, `ARM_SUBSCRIPTION_ID`, and `ARM_TENANT_ID`, or use Terraform's native OIDC authentication.
 
 **Additional secrets** (Terraform sensitive inputs used by plan/apply):
 
