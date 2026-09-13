@@ -30,4 +30,34 @@ jobs:
       - name: Install Playwright browser
         run: pwsh tests/ReMind.PlaywrightTests/bin/Release/net10.0/playwright.ps1 install chromium
       - name: Test solution
-        run: dotnet test ReMind.sln --no-build -c Release
+        run: dotnet test ReMind.sln --no-build -c Release --collect:"XPlat Code Coverage" --results-directory ./TestResults
+      - name: Install ReportGenerator
+        if: ${{ !cancelled() }}
+        run: dotnet tool install -g dotnet-reportgenerator-globaltool
+      - name: Merge coverage reports
+        if: ${{ !cancelled() }}
+        run: reportgenerator -reports:"./TestResults/**/coverage.cobertura.xml" -targetdir:./TestResults/merged -reporttypes:Cobertura
+      - name: Upload coverage artifact
+        if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report-csharp
+          path: ./TestResults/merged/Cobertura.xml
+
+  upload-coverage-csharp:
+    needs: dotnet-build
+    if: ${{ !cancelled() && needs.dotnet-build.result == 'success' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      code-quality: write
+    steps:
+      - name: Download coverage artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: coverage-report-csharp
+      - uses: actions/upload-code-coverage@v1
+        with:
+          file: Cobertura.xml
+          language: C#
+          label: code-coverage-agent
