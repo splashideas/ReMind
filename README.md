@@ -40,8 +40,15 @@ az storage account create \
   --min-tls-version TLS1_2 \
   --allow-blob-public-access false
 
-az storage container create --account-name "$SA_NAME" --name "$STATE_CONTAINER" --auth-mode login
-az storage container create --account-name "$SA_NAME" --name "$PLAN_CONTAINER" --auth-mode login
+# Management-plane container create (no Storage Blob Data role required for the operator).
+az storage container-rm create \
+  --storage-account "$SA_NAME" \
+  --resource-group "$RG_NAME" \
+  --name "$STATE_CONTAINER"
+az storage container-rm create \
+  --storage-account "$SA_NAME" \
+  --resource-group "$RG_NAME" \
+  --name "$PLAN_CONTAINER"
 
 # Auto-delete saved plan blobs under the plans/ prefix after 7 days so cleanup
 # does not depend solely on the apply job (e.g. cancelled workflows).
@@ -79,7 +86,7 @@ az storage account management-policy create \
 
 ### 2. Create a service principal for GitHub Actions
 
-Prefer a credential scoped to that same subscription (Contributor or a tighter custom role) **and** data-plane access on the state account. `subscriptionId` in `AZURE_CREDENTIALS` is the subscription Terraform uses for both backend access and resource deployment.
+Prefer a credential scoped to that same subscription with **Contributor** plus permission to create role assignments (for example **Role Based Access Control Administrator**), **and** data-plane access on the state account. Contributor alone cannot apply this configuration because `infra/terraform` creates `azurerm_role_assignment` resources (`function_blob` / `function_queue`), which require `Microsoft.Authorization/roleAssignments/write`. `subscriptionId` in `AZURE_CREDENTIALS` is the subscription Terraform uses for both backend access and resource deployment.
 
 ```bash
 # Must be the same subscription used for state storage above.
@@ -93,14 +100,25 @@ az ad sp create-for-rbac \
   --role Contributor \
   --scopes "/subscriptions/$SUBSCRIPTION_ID" \
   --sdk-auth
+
+# Set this from clientId in the saved AZURE_CREDENTIALS JSON.
+SP_CLIENT_ID="<appId>"
+SP_OBJECT_ID=$(az ad sp show --id "$SP_CLIENT_ID" --query id -o tsv)
+
+# Required so Terraform can create azurerm_role_assignment resources
+# (Contributor alone excludes Microsoft.Authorization/roleAssignments/write).
+# Scope can be tightened to the app resource group once it exists.
+az role assignment create \
+  --assignee-object-id "$SP_OBJECT_ID" \
+  --assignee-principal-type ServicePrincipal \
+  --role "Role Based Access Control Administrator" \
+  --scope "/subscriptions/$SUBSCRIPTION_ID"
 ```
 
 Grant the same principal permission to read/write state and plan blobs (Azure AD auth, no storage account keys in CI):
 
 ```bash
-# Set this from clientId in the saved AZURE_CREDENTIALS JSON.
-SP_CLIENT_ID="<appId>"
-SP_OBJECT_ID=$(az ad sp show --id "$SP_CLIENT_ID" --query id -o tsv)
+# Reuse SP_OBJECT_ID from above (resolved from clientId in AZURE_CREDENTIALS).
 SA_ID=$(az storage account show --name "$SA_NAME" --resource-group "$RG_NAME" --query id -o tsv)
 
 az role assignment create \
