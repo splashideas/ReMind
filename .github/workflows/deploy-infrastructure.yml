@@ -136,9 +136,10 @@ jobs:
 
       - name: Remove plan file from Azure Storage
         if: always()
+        continue-on-error: true
         run: |
           az storage blob delete \
             --account-name "${{ vars.TF_BACKEND_STORAGE_ACCOUNT }}" \
             --container-name "${{ vars.TF_BACKEND_PLAN_CONTAINER }}" \
             --name "${{ env.TF_PLAN_BLOB_NAME }}" \
-            --auth-mode login || true
+            --auth-mode login
