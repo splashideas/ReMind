@@ -155,7 +155,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 
 ```
 POST   /api/datapoints                  # Create a data point
-GET    /api/datapoints/nearby           # Proximity search (lat, long, radius, page)
+GET    /api/datapoints/nearby           # Proximity search (latitude, longitude, radiusMeters, cursor, pageSize)
 GET    /api/datapoints/{id}             # Get single data point with media
 PUT    /api/datapoints/{id}             # Update own data point
 DELETE /api/datapoints/{id}             # Soft-delete own data point
