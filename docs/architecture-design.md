@@ -284,7 +284,7 @@ Client → API (request upload URL)
 
 ### Application Security
 
-- All secrets in Key Vault (no connection strings in app settings)
+- All secrets in Key Vault; grant ReMind.Api and the thumbnail Function managed identities least-privilege access and use Key Vault references or managed-identity-based connections instead of plaintext app settings
 - CORS restricted to known frontend origins
 - Input validation: sanitize HTML in descriptions, validate file uploads
 - SQL injection: EF Core parameterization (eliminate remaining raw SQL)
