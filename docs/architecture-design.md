@@ -275,7 +275,7 @@ Client → API (request upload URL)
 
 - Location data is personal data — require explicit consent before collecting GPS
 - Data retention policy: auto-delete posts after N years (configurable)
-- Right to erasure: cascade delete user data (posts, media, comments, follows)
+- Right to erasure: delete user data, media/thumbnail blobs, and cached media through an asynchronous, retryable cleanup workflow with auditable completion status
 - Data export: allow users to download all their data
 
 ### Application Security
