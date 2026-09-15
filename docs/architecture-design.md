@@ -167,7 +167,8 @@ POST   /api/datapoints/{id}/reactions   # Add/update reaction
 
 GET    /api/users/{id}                  # Get user profile
 PUT    /api/users/me                    # Update own profile
-POST   /api/users/{id}/follow           # Follow/unfollow
+PUT    /api/users/{id}/follow           # Follow
+DELETE /api/users/{id}/follow           # Unfollow
 
 GET    /api/feed                        # Activity feed (followed users' posts)
 POST   /api/reports                     # Report content
