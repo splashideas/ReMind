@@ -198,7 +198,7 @@ Client → API (request upload URL)
 ### Decisions
 
 - **Container structure**: `media/{userId}/{dataPointId}/{fileName}`
-- **Allowed types**: JPEG, PNG, WebP, MP4, MOV (validate MIME + extension)
+- **Allowed types**: JPEG, PNG, WebP, MP4, MOV (validate blob signatures/content server-side, not only client-supplied MIME + extension, before publishing)
 - **Max file size**: 50 MB photos, 500 MB videos
 - **CDN**: Azure Front Door or Azure CDN for media delivery
 - **Moderation**: Azure Content Safety or manual review queue for uploaded media
