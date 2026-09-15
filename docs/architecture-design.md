@@ -260,7 +260,7 @@ Client → API (request upload URL)
 
 - Add Node.js build step for React SPA (`npm ci`, `npm run build`, `npm test`)
 - Add React Native build validation (TypeScript check, Jest tests)
-- EF Core migration bundle generation in CI
+- Build and execute the EF Core migration bundle in the database deployment workflow; remove the `ReMind.Database` `azure/sql-action` path before the first database deployment.
 - Playwright tests target React SPA (not Razor)
 - Load testing for proximity queries (k6 or Azure Load Testing)
 
