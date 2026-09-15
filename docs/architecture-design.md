@@ -105,12 +105,24 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 
 ```csharp
 var userLocation = new Point(longitude, latitude) { SRID = 4326 };
+double? cursorDistance = request.Cursor?.DistanceMeters;
+long? cursorDataPointId = request.Cursor?.DataPointId;
 
 var nearby = await db.DataPoints
-    .Where(d => !d.IsDeleted && d.Visibility == Visibility.Public)
-    .Where(d => d.Location.Distance(userLocation) <= radiusMeters)
-    .OrderBy(d => d.Location.Distance(userLocation))
+    .Select(d => new
+    {
+        DataPoint = d,
+        Distance = d.Location.Distance(userLocation)
+    })
+    .Where(x => !x.DataPoint.IsDeleted && x.DataPoint.Visibility == Visibility.Public)
+    .Where(x => x.Distance <= radiusMeters)
+    .Where(x => cursorDistance == null
+        || x.Distance > cursorDistance
+        || (x.Distance == cursorDistance && x.DataPoint.DataPointId > cursorDataPointId))
+    .OrderBy(x => x.Distance)
+    .ThenBy(x => x.DataPoint.DataPointId)
     .Take(pageSize)
+    .Select(x => x.DataPoint)
     .ToListAsync();
 ```
 
