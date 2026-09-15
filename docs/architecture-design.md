@@ -204,7 +204,7 @@ Client → API (request upload URL)
 - **Container structure**: `media/{userId}/{dataPointId}/{fileName}`
 - **Allowed types**: JPEG, PNG, WebP, MP4, MOV (validate blob signatures/content server-side, not only client-supplied MIME + extension, before publishing)
 - **Max file size**: 50 MB photos, 500 MB videos
-- **CDN**: Azure Front Door or Azure CDN for media delivery
+- **CDN**: Azure Front Door or Azure CDN for media delivery; keep the blob origin private where supported and issue short-lived, visibility-checked signed/authenticated read URLs
 - **Moderation**: Azure Content Safety or manual review queue for uploaded media
 - **Thumbnails**: Azure Function on queue trigger using `SixLabors.ImageSharp`
 
