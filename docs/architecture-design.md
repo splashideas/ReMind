@@ -90,6 +90,9 @@ USING GEOGRAPHY_AUTO_GRID;
 ### DbContext Setup
 
 ```csharp
+builder.Services.AddDbContext<ReMindDbContext>(options =>
+    options.UseSqlServer(connectionString, sql => sql.UseNetTopologySuite()));
+
 protected override void OnModelCreating(ModelBuilder modelBuilder)
 {
     modelBuilder.Entity<DataPoint>()
