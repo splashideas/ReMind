@@ -293,7 +293,7 @@ Client → API (request upload URL)
 
 ### Network Security
 
-- SQL Server public network access disabled in production; access only through a private endpoint
+- SQL Server public network access disabled in production; provision a VNet/private endpoint/private DNS and API/App Service/Container Apps VNet integration so the API can reach SQL
 - For environments that require public access, use narrow explicit IP firewall rules and do not enable “Allow Azure services”
 - Front Door WAF rules (OWASP top 10)
 
