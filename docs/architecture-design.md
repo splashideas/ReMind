@@ -252,7 +252,7 @@ Client → API (request upload URL)
 | Resource | Purpose |
 |---|---|
 | `azurerm_storage_account` (media) | User-uploaded photos/videos |
-| `azurerm_cdn_profile` + endpoint | Media delivery |
+| `azurerm_cdn_frontdoor_profile` + endpoint/origin/route | Media delivery |
 | `azurerm_key_vault` | Secrets (SQL connection string, SAS keys) |
 | `azurerm_application_insights` | Monitoring and diagnostics |
 | `azurerm_log_analytics_workspace` | Centralized logging |
