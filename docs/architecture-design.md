@@ -160,7 +160,7 @@ GET    /api/datapoints/{id}             # Get single data point with media
 PUT    /api/datapoints/{id}             # Update own data point
 DELETE /api/datapoints/{id}             # Soft-delete own data point
 
-POST   /api/datapoints/{id}/media       # Get SAS upload URL for media
+POST   /api/datapoints/{id}/media       # Short-lived, write-only SAS for media owned by the caller
 POST   /api/datapoints/{id}/comments    # Add comment
 GET    /api/datapoints/{id}/comments    # List comments
 POST   /api/datapoints/{id}/reactions   # Add/update reaction
