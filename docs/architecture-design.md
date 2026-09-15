@@ -240,7 +240,7 @@ Client → API (request upload URL)
 | Resource | Change |
 |---|---|
 | `azurerm_service_plan` | Upgrade from B1 to P1v3 or switch to Container Apps |
-| `azurerm_linux_web_app` | Repurpose for `ReMind.Api` (not Razor frontend) |
+| `azurerm_linux_web_app` | Repurpose for `ReMind.Api`; add a separate Static Web Apps/Storage static website/Front Door origin (or documented external host) for `ReMind.Web` |
 | `azurerm_linux_function_app` | Keep for thumbnail generation + background jobs |
 | `azurerm_mssql_database` | Upgrade SKU from Basic to S0+ for spatial index performance |
 
