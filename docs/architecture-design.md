@@ -141,6 +141,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 |---|---|
 | View public posts | Any authenticated user |
 | View friends-only posts | Follower of the author |
+| View private posts | Author only |
 | Create post | Any authenticated user |
 | Edit/delete own post | Author only |
 | Comment | Any authenticated user |
