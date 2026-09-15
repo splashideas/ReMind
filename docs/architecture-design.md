@@ -55,7 +55,9 @@ CREATE TABLE dbo.DataPoints (
     CreatedUtc      DATETIME2(7) NOT NULL DEFAULT SYSUTCDATETIME(),
     UpdatedUtc      DATETIME2(7) NULL,
     Visibility      TINYINT NOT NULL DEFAULT 0,  -- 0=Public, 1=FriendsOnly, 2=Private
-    IsDeleted       BIT NOT NULL DEFAULT 0
+    IsDeleted       BIT NOT NULL DEFAULT 0,
+    CONSTRAINT CK_DataPoints_Location_SRID CHECK (Location.STSrid = 4326),
+    CONSTRAINT CK_DataPoints_Visibility CHECK (Visibility IN (0, 1, 2))
 );
 
 CREATE SPATIAL INDEX IX_DataPoints_Location
@@ -131,6 +133,7 @@ var nearby = await db.DataPoints
 - **Selected approach (Option A)**: EF Core migrations are the schema source of truth.
 - No database has been created yet, so there is no existing `dbo.DataPoints` table or application data to migrate, backfill, or preserve.
 - Before deploying the database resources, remove the old create-if-missing SQL path and create the initial schema from the first EF Core migration/bundle.
+- Ensure the initial EF Core migration explicitly emits `CREATE SPATIAL INDEX IX_DataPoints_Location ...` because the `Location` mapping alone does not create the spatial index.
 - If the schema design changes again before first deployment, update the initial migration and redeploy; no rollback/data-disposition process is required until persisted data exists.
 
 ## 4. Authentication & Authorization
@@ -171,12 +174,13 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 
 ```
 POST   /api/datapoints                  # Create a data point
-GET    /api/datapoints/nearby           # Proximity search (latitude, longitude, radiusMeters, cursor, pageSize)
+GET    /api/datapoints/nearby           # Proximity search (latitude [-90,90], longitude [-180,180], radiusMeters 1-50000, cursor, pageSize default 25 max 100)
 GET    /api/datapoints/{id}             # Get single data point with media
 PUT    /api/datapoints/{id}             # Update own data point
 DELETE /api/datapoints/{id}             # Soft-delete own data point
 
 POST   /api/datapoints/{id}/media       # Short-lived, write-only SAS for media owned by the caller
+POST   /api/datapoints/{id}/media/complete # Validate uploaded blob metadata, create the media record, and enqueue thumbnail work
 POST   /api/datapoints/{id}/comments    # Add comment
 GET    /api/datapoints/{id}/comments    # List comments
 POST   /api/datapoints/{id}/reactions   # Add/update reaction
@@ -194,6 +198,7 @@ GET    /api/moderation/queue            # Admin: moderation queue
 ### Design Notes
 
 - Pagination via cursor-based (not OFFSET) for large result sets
+- Reject invalid nearby-query coordinates/radius/page size with HTTP 400 and enforce the documented bounds before `Point(...)`, `STDistance`, and `Take(...)`
 - Bounding-box pre-filter before `STDistance` for map viewport queries
 - Rate limiting via `AspNetCoreRateLimit` or Azure Front Door WAF
 - OpenAPI/Swagger for API documentation
@@ -207,7 +212,7 @@ GET    /api/moderation/queue            # Admin: moderation queue
 Client → API (request upload URL)
        → API generates SAS token for Blob Storage
        → Client uploads directly to Blob Storage
-       → Client confirms upload → API saves media record
+       → Client confirms upload → API validates the blob exists, matches expected size/signature, saves the media record, and enqueues thumbnail processing
        → Azure Function (queue trigger) generates thumbnail
        → CDN serves thumbnails and media
 ```
@@ -251,6 +256,9 @@ Client → API (request upload URL)
 | `azurerm_key_vault` | Secrets (SQL connection string, SAS keys) |
 | `azurerm_application_insights` | Monitoring and diagnostics |
 | `azurerm_log_analytics_workspace` | Centralized logging |
+| `azurerm_virtual_network` + subnets | Private network boundary for SQL private endpoint and app integration |
+| `azurerm_private_endpoint` + `azurerm_private_dns_zone` | Private SQL connectivity and name resolution |
+| `azurerm_app_service_virtual_network_swift_connection` (or Container Apps VNet integration) | Allow `ReMind.Api` to reach SQL over the private endpoint |
 
 ### Modified Resources
 
