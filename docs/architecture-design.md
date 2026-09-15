@@ -38,7 +38,7 @@ ReMind.sln
 
 **Decisions to make:**
 - Keep or retire `ReMind.Frontend` (Razor) and `ReMind.Functions` once the new projects are stable.
-- Whether `ReMind.Database` (SSDT-style) remains the schema source of truth or EF Core migrations take over.
+- Adopt EF Core migrations in `ReMind.Data` as the schema source of truth and retire `ReMind.Database` before the first database deployment.
 
 ## 2. Spatial Data Model
 
@@ -113,9 +113,10 @@ var nearby = await db.DataPoints
 
 ### Migration Strategy
 
-Choose one:
-- **Option A**: EF Core migrations as the schema source of truth (recommended for new development)
-- **Option B**: Keep `ReMind.Database` SQL project and hand-write spatial DDL
+- **Selected approach (Option A)**: EF Core migrations are the schema source of truth.
+- No database has been created yet, so there is no existing `dbo.DataPoints` table or application data to migrate, backfill, or preserve.
+- Before deploying the database resources, remove the old create-if-missing SQL path and create the initial schema from the first EF Core migration/bundle.
+- If the schema design changes again before first deployment, update the initial migration and redeploy; no rollback/data-disposition process is required until persisted data exists.
 
 ## 4. Authentication & Authorization
 
