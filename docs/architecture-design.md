@@ -68,8 +68,8 @@ USING GEOGRAPHY_AUTO_GRID;
 - **Users**: profile info, Entra External ID object ID, display name, avatar URL, bio
 - **Media**: `MediaId`, `DataPointId`, `BlobUrl`, `ThumbnailUrl`, `MediaType` (Photo/Video), `SortOrder`
 - **Comments**: `CommentId`, `DataPointId`, `UserId`, `Text`, `CreatedUtc`, `ParentCommentId` (threading)
-- **Reactions**: `ReactionId`, `DataPointId`, `UserId`, `ReactionType` (Like, Love, etc.)
-- **Follows**: `FollowerId`, `FolloweeId`, `CreatedUtc`
+- **Reactions**: `ReactionId`, `DataPointId`, `UserId`, `ReactionType` (Like, Love, etc.); unique constraint on (`DataPointId`, `UserId`)
+- **Follows**: `FollowerId`, `FolloweeId`, `CreatedUtc`; unique constraint on (`FollowerId`, `FolloweeId`)
 - **Reports**: `ReportId`, `ReporterId`, `DataPointId`/`CommentId`, `Reason`, `Status`, `CreatedUtc`
 
 ### Spatial Design Decisions
