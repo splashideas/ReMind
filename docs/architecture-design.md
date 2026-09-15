@@ -290,8 +290,8 @@ Client → API (request upload URL)
 
 ### Network Security
 
-- SQL Server firewall: allow only Azure services + specific IPs
-- Private endpoints for SQL and Blob Storage (production)
+- SQL Server public network access disabled in production; access only through a private endpoint
+- For environments that require public access, use narrow explicit IP firewall rules and do not enable “Allow Azure services”
 - Front Door WAF rules (OWASP top 10)
 
 ## 11. Implementation Phases
