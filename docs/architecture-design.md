@@ -138,7 +138,8 @@ var nearby = await db.DataPoints
 ### Entra External ID Setup
 
 1. Create an Entra External ID tenant (separate from the existing Entra ID on the SQL server)
-2. Register two applications:
+2. Register three applications:
+   - **API**: expose the scopes and audience accepted by `ReMind.Api`
    - **React SPA**: MSAL.js with Authorization Code Flow + PKCE
    - **React Native**: MSAL or Expo AuthSession with PKCE
 3. Configure social identity providers: Google, Apple, Facebook
