@@ -163,8 +163,8 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 | View private posts | Author only |
 | Create post | Any authenticated user |
 | Edit/delete own post | Author only |
-| Comment | Any authenticated user |
-| React | Any authenticated user |
+| Comment | Any authenticated user who can view the target post |
+| React | Any authenticated user who can view the target post |
 | Report | Any authenticated user |
 | Moderate | Admin role (custom claim) |
 
