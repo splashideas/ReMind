@@ -166,7 +166,7 @@ CREATE TABLE dbo.DataPointTags (
 
 - Use `GEOGRAPHY` (not `GEOMETRY`) for real-world lat/long with `STDistance` and `STIntersects`/containment-style predicates for bounds filtering
 - SRID 4326 (WGS 84) — the GPS standard
-- `DATETIMEOFFSET` for `EventDate` so historical dates carry timezone context; clients may set past event times explicitly on create/update
+- `DATETIMEOFFSET` for `EventDate` so historical dates retain the recorded UTC offset; if named time-zone rules/context are required later, store a separate IANA/Windows zone identifier alongside it; clients may set past event times explicitly on create/update
 - Spatial index is critical for proximity query performance
 - Association and search “near” radius is always caller-supplied within documented bounds (default 250 m, min 1 m, max 50_000 m)
 ## 3. EF Core + NetTopologySuite
@@ -386,7 +386,7 @@ The request intentionally omits any client-declared `location.source` flag: the 
 ### Nearby search request contract (illustrative)
 
 ```http
-GET /api/datapoints/nearby?lat=52.52&lng=13.405&radiusMeters=250&pageSize=25&cursor=eyJtb2RlIjoibWFwIiwiZGlzdGFuY2VNZXRlcnMiOjg3LjQxLCJkYXRhUG9pbnRJZCI6MTIzNDUsImNlbnRlciI6WzUyLjUyLDEzLjQwNV0sInJhZGl1c01ldGVycyI6MjUwfQ
+GET /api/datapoints/nearby?lat=52.52&lng=13.405&radiusMeters=250&pageSize=25&cursor=eyJtb2RlIjoibWFwIiwiZGlzdGFuY2VNZXRlcnMiOjg3LjQxLCJkYXRhUG9pbnRJZCI6MTIzNDUsImNlbnRlciI6WzUyLjUyLDEzLjQwNV0sInJhZGl1c01ldGVycyI6MjUwLCJwYWdlU2l6ZSI6MjV9
 ```
 
 `/nearby` is for explicit map-selected coordinates. GPS-assisted nearby search uses `GET /api/datapoints/nearby/gps?gpsFixId=...` with a short-lived `gpsFixId`. The continuation cursor is opaque and server-issued; it encodes the route/search mode, the `(distanceMeters, dataPointId)` seek boundary, and the bound inputs (map center or `gpsFixId`, radius, page size), and the API rejects any cursor replayed with different route or bound inputs.
@@ -436,7 +436,7 @@ Client → API (request upload URL)
 - **Upload identity**: the initial upload call is author-only, issues the `UploadId`, stores the canonical blob key/expiry on the pending reservation, and completion is idempotent on that `UploadId`; terminal `Ready`/`Rejected` states are no-ops on retry, duplicate completion attempts must not enqueue duplicate work, expired pending uploads are reaped so abandoned blobs do not accumulate, and rejected blobs/metadata are retained only for a bounded audit window before janitor cleanup
 - **Media outbox**: record thumbnail/moderation work in the same SQL transaction as the media row; a retrying dispatcher publishes to the queue so a crash between commit and enqueue cannot leave media permanently unprocessed, and a unique outbox deduplication key (`UploadId` + work type) prevents duplicate work rows
 - **Thumbnail worker**: queue delivery is at-least-once, so thumbnail blob paths must be deterministic (`media/{userId}/{dataPointId}/thumbnails/{uploadId}.jpg`) across the producer, worker, and signed-read URL builder; if the thumbnail already exists, treat that as success after verifying/upserting metadata, otherwise create it and then upsert metadata without duplicate side effects
-- **Blob SAS**: mint user-delegation SAS tokens with the API managed identity (no retained storage account keys); uploads are constrained to a single canonical blob path with create-only permissions (no overwrite) and must use `If-None-Match: *`; reserve Key Vault for secrets that cannot use identity-based access
+- **Blob SAS**: mint user-delegation SAS tokens with the API managed identity (no retained storage account keys); uploads are constrained to a single canonical blob path with create + write permissions so chunked `Put Block` / `Put Block List` uploads work, the initial create must use `If-None-Match: *`, and completion validates the reserved blob's ETag/size/hash before any processing or publish step; reserve Key Vault for secrets that cannot use identity-based access
 - **Upload networking**: because web/mobile clients upload directly, the Blob service endpoint must remain publicly reachable for the upload container, but anonymous blob access stays disabled and Blob service CORS is configured in IaC for each allowed SPA origin plus the required `PUT`/preflight headers/methods—never wildcard origins—while SAS scope/TTL still restrict access to the intended blob path
 - **CDN**: Azure Front Door Premium (`azurerm_cdn_frontdoor_*`) for media delivery; the API issues short-lived, visibility-checked read URLs whose query string carries a blob-read SAS for the single canonical object, Front Door forwards that query string to Blob Storage over the selected origin route, and cache TTL never exceeds the SAS expiry so stale authorized objects are not served after revocation
 - **Moderation**: Azure Content Safety or manual review queue for uploaded media while Status remains `PendingModeration` / non-Ready; only moderation-approved media transitions to `Ready`
@@ -450,7 +450,7 @@ This section is the product contract for create/search flows on web and mobile.
 
 1. **Location**
    - **Map pin**: user pans/zooms the map and drops a pin (default create path).
-   - **GPS**: user opts in; client reads device coordinates only after `POST /api/users/me/consents` shows grant for the current location-policy version (or records a new grant), then exchanges that device fix for a short-lived `gpsFixId` via `POST /api/users/me/gps-fixes`. Revocation blocks further GPS use until re-granted.
+   - **GPS**: user opts in; client reads device coordinates only after `POST /api/users/me/consents` shows grant for the current location-policy version (or records a new grant), then exchanges that device fix for a short-lived `gpsFixId` via `POST /api/users/me/gps-fixes`. Revocation blocks new handle minting and causes any still-unexpired `gpsFixId` redemption to fail until consent is re-granted.
 2. **Near / association radius**
    - UI control (slider or presets, e.g. 50 m / 100 m / 250 m / 1 km) sets `associationRadiusMeters`.
    - Client calls `GET /api/datapoints/chain-candidates` for a dropped pin or `GET /api/datapoints/chain-candidates/gps?gpsFixId=...` for a consent-validated fix; GPS-assisted candidate lookups never accept raw device coordinates on their own route.
@@ -528,6 +528,7 @@ This section is the product contract for create/search flows on web and mobile.
 | `azurerm_storage_account` (media) | User-uploaded photos/videos |
 | `azurerm_role_assignment` on the media storage account | Grant `ReMind.Api` least-privilege SAS issuance roles (`Storage Blob Delegator` plus blob data role needed for existence/metadata checks) and grant the thumbnail worker blob read/write rights |
 | `azurerm_cdn_frontdoor_profile` + endpoint/origin-group/origin/route (Standard/Premium) | Media delivery |
+| `azurerm_cdn_frontdoor_firewall_policy` + `azurerm_cdn_frontdoor_security_policy` | Front Door WAF rules plus association of that WAF policy to the media routes/domains |
 | `azurerm_key_vault` | Secrets that cannot use identity-based access (e.g. Azure Maps key if required; not storage account keys — Blob SAS uses user-delegation via managed identity) |
 | `azurerm_application_insights` | Monitoring and diagnostics |
 | `azurerm_log_analytics_workspace` | Centralized logging |
@@ -577,10 +578,10 @@ This section is the product contract for create/search flows on web and mobile.
 ### Data Privacy (GDPR / CCPA)
 
 - Location data is personal data.
-- **Consent**: `UserConsents` (or equivalent) stores `UserId`, `Purpose` (`LocationGps`), `PolicyVersion`, `Granted`, `RecordedUtc`, `ClientUtc`, `RevokedUtc`. GPS-assisted create/search requires a non-revoked grant for the current policy version, and the server enforces that rule when minting short-lived `gpsFixId` handles (client prompts alone are not sufficient). Map-pin coordinates remain personal data covered by the privacy policy and retention/erasure flows.
+- **Consent**: `UserConsents` (or equivalent) stores `UserId`, `Purpose` (`LocationGps`), `PolicyVersion`, `Granted`, `RecordedUtc`, `ClientUtc`, `RevokedUtc`. GPS-assisted create/search requires a non-revoked grant for the current policy version, and the server enforces that rule both when minting short-lived `gpsFixId` handles and again whenever one is redeemed (client prompts alone are not sufficient). Map-pin coordinates remain personal data covered by the privacy policy and retention/erasure flows.
 - **GPS fix retention**: `GpsFixes` are transient personal-location records; each handle expires quickly, a scheduled janitor purges expired rows on a short cadence, and the erasure workflow deletes any remaining fixes immediately.
 - Data retention policy: auto-delete posts after N years (configurable)
-- Right to erasure: `POST /api/users/me/erasure-requests` starts an asynchronous, retryable cleanup workflow that (1) stops issuing new signed media URLs, relies on short token TTLs for any already-issued URLs, deletes blobs/thumbnails, and purges Front Door cache entries (with account-wide user-delegation-key revocation reserved for exceptional blast-radius events), (2) tombstones/cancels any queued or yet-to-be-published media work, requires dispatchers/workers to re-read current media/user deletion state before publishing messages or writing thumbnails, and deletes or anonymizes dependent SQL rows in FK-safe order—`GpsFixes`, `UserConsents`, `Follows`, `Reactions`, `Comments`, `Reports`, custom-tag ownership/unused custom tags, the user’s `Media`/`DataPoints`, corresponding `OutboxMessages`, then empty or tombstone-reassigned `DataPointChains` / retained `Tags` ownership—and only then (3) deletes or scrubs the `Users` row; `GET /api/users/me/erasure-requests/{id}` reports auditable completion status
+- Right to erasure: `POST /api/users/me/erasure-requests` starts an asynchronous, retryable cleanup workflow that (1) stops issuing new signed media URLs, relies on short token TTLs for any already-issued URLs, deletes blobs/thumbnails, and purges Front Door cache entries (with account-wide user-delegation-key revocation reserved for exceptional blast-radius events), (2) tombstones/cancels any queued or yet-to-be-published media work, requires dispatchers/workers to re-read current media/user deletion state before publishing messages or writing thumbnails, and deletes or anonymizes dependent SQL rows in FK-safe order—`GpsFixes`, `UserConsents`, `Follows`, `Reactions`, `Reports`, `Comments`, custom-tag ownership/unused custom tags, the user’s `Media`/`DataPoints`, corresponding `OutboxMessages`, then empty or tombstone-reassigned `DataPointChains` / retained `Tags` ownership—and only then (3) deletes or scrubs the `Users` row; `GET /api/users/me/erasure-requests/{id}` reports auditable completion status
 - Data export: `POST /api/users/me/export-requests` starts a full export job and `GET /api/users/me/export-requests/{id}` returns status plus the authenticated download when ready
 
 ### Application Security
