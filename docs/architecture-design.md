@@ -120,7 +120,9 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 
 ```csharp
 var userLocation = new Point(longitude, latitude) { SRID = 4326 };
-Guid currentUserId = request.UserId;
+// Resolve caller identity server-side from the validated token (iss/sub → Users.ExternalObjectId).
+// Never accept currentUserId from the request body/query; clients must not supply caller identity.
+Guid currentUserId = await userDirectory.GetCurrentUserIdAsync(HttpContext.User, cancellationToken);
 IReadOnlyCollection<Guid> followedAuthorIds = await followService.GetFolloweeIdsAsync(currentUserId, cancellationToken);
 double? cursorDistance = request.Cursor?.DistanceMeters;
 long? cursorDataPointId = request.Cursor?.DataPointId;
@@ -144,8 +146,17 @@ var nearby = await db.DataPoints
     .OrderBy(x => x.Distance)
     .ThenBy(x => x.DataPoint.DataPointId)
     .Take(pageSize)
-    .Select(x => x.DataPoint)
+    // Keep the SQL-computed geography distance (meters) on the DTO so the next
+    // (distance, DataPointId) cursor matches the database ordering boundary.
+    // Do not recompute distance client-side with NetTopologySuite planar units.
+    .Select(x => new NearbyDataPointDto
+    {
+        DataPoint = x.DataPoint,
+        DistanceMeters = x.Distance
+    })
     .ToListAsync();
+
+// nextCursor = (nearby.Last.DistanceMeters, nearby.Last.DataPoint.DataPointId)
 ```
 
 ### Migration Strategy
@@ -199,8 +210,8 @@ GET    /api/datapoints/{id}             # Get single data point with media
 PUT    /api/datapoints/{id}             # Update own data point
 DELETE /api/datapoints/{id}             # Soft-delete own data point
 
-POST   /api/datapoints/{id}/media       # Issue a server-generated uploadId/blob key plus a short-lived, write-only SAS for media owned by the caller
-POST   /api/datapoints/{id}/media/complete # Validate uploaded blob metadata for the uploadId, create-or-return the unique media record, and enqueue thumbnail work once
+POST   /api/datapoints/{id}/media       # Issue a server-generated uploadId/blob key plus a short-lived, write-only user-delegation Blob SAS (minted via the API managed identity) for media owned by the caller
+POST   /api/datapoints/{id}/media/complete # Validate uploaded blob metadata for the uploadId; in one SQL transaction create-or-return the unique media record and write a transactional outbox row; a retrying dispatcher publishes queue work from the outbox
 POST   /api/datapoints/{id}/comments    # Add comment
 GET    /api/datapoints/{id}/comments    # List comments
 POST   /api/datapoints/{id}/reactions   # Add/update reaction
@@ -225,8 +236,8 @@ GET    /api/moderation/queue            # Admin: moderation queue
 - Reject invalid nearby-query coordinates/radius/page size with HTTP 400 and enforce the documented bounds before `Point(...)`, `STDistance`, and `Take(...)`
 - Bounding-box pre-filter before `STDistance` for map viewport queries
 - Rate limiting via `AspNetCoreRateLimit` or Azure Front Door WAF
-- `/nearby` always evaluates visibility with the authenticated caller ID plus follow relationships before returning rows
-- OpenAPI/Swagger for API documentation
+- `/nearby` always evaluates visibility with the authenticated caller ID resolved from the JWT (not a client-supplied user id) plus follow relationships before returning rows
+- `/nearby` responses retain the SQL-computed `DistanceMeters` so continuation cursors use `(distance, DataPointId)` from the last returned row- OpenAPI/Swagger for API documentation
 - SignalR hub for real-time map updates (post-MVP)
 
 ## 6. Media Storage
@@ -235,11 +246,12 @@ GET    /api/moderation/queue            # Admin: moderation queue
 
 ```
 Client → API (request upload URL)
-       → API generates a server-owned uploadId/blob key plus a SAS token for Blob Storage
+       → API uses its managed identity to obtain a user-delegation key and mints a short-lived, write-only Blob SAS for a server-owned uploadId/blob key
        → Client uploads directly to Blob Storage
-       → Client confirms upload → API validates the blob exists, matches expected size/signature, creates-or-returns the unique media record for that uploadId, and enqueues thumbnail processing once
-       → Azure Function (queue trigger) generates thumbnail
-       → CDN serves thumbnails and media
+       → Client confirms upload → API validates the blob exists and matches expected size/signature, then in one SQL transaction create-or-returns the unique media record for that uploadId and inserts a transactional outbox row for thumbnail work
+       → Retrying outbox dispatcher publishes the queue message (at-least-once) until acknowledged
+       → Azure Function (queue trigger) generates thumbnail idempotently to a deterministic path and create/updates the media thumbnail fields
+       → CDN serves approved thumbnails and media
 ```
 
 ### Decisions
@@ -248,6 +260,9 @@ Client → API (request upload URL)
 - **Allowed types**: JPEG, PNG, WebP, MP4, MOV (validate blob signatures/content server-side, not only client-supplied MIME + extension, before publishing)
 - **Max file size**: 50 MB photos, 500 MB videos
 - **Upload identity**: the initial upload call issues the `UploadId` and canonical blob key, and completion is idempotent on that `UploadId`
+- **Media outbox**: record thumbnail/moderation work in the same SQL transaction as the media row; a retrying dispatcher publishes to the queue so a crash between commit and enqueue cannot leave media permanently unprocessed
+- **Thumbnail worker**: queue delivery is at-least-once, so thumbnail blob paths must be deterministic (`media/{userId}/{dataPointId}/thumbnails/{uploadId}.jpg`) and the Function must idempotently overwrite/create the blob and upsert media thumbnail metadata without duplicate side effects
+- **Blob SAS**: mint user-delegation SAS tokens with the API managed identity (no retained storage account keys); reserve Key Vault for secrets that cannot use identity-based access
 - **CDN**: Azure Front Door Standard/Premium (`azurerm_cdn_frontdoor_*`) for media delivery; keep the blob origin private where supported and issue short-lived, visibility-checked signed/authenticated read URLs
 - **Moderation**: Azure Content Safety or manual review queue for uploaded media
 - **Thumbnails**: Azure Function on queue trigger using `SixLabors.ImageSharp` for images and FFmpeg or Azure Video Indexer for MP4/MOV thumbnails
@@ -279,7 +294,7 @@ Client → API (request upload URL)
 |---|---|
 | `azurerm_storage_account` (media) | User-uploaded photos/videos |
 | `azurerm_cdn_frontdoor_profile` + endpoint/origin-group/origin/route (Standard/Premium) | Media delivery |
-| `azurerm_key_vault` | Secrets (SQL connection string, SAS keys) |
+| `azurerm_key_vault` | Secrets that cannot use identity-based access (not storage account keys; Blob SAS uses user-delegation via managed identity) |
 | `azurerm_application_insights` | Monitoring and diagnostics |
 | `azurerm_log_analytics_workspace` | Centralized logging |
 | `azurerm_virtual_network` + subnets | Private network boundary for SQL private endpoint and app integration |
