@@ -163,7 +163,7 @@ CREATE TABLE dbo.DataPointTags (
 
 ### Spatial Design Decisions
 
-- Use `GEOGRAPHY` (not `GEOMETRY`) for real-world lat/long with `STDistance`, `STWithin`
+- Use `GEOGRAPHY` (not `GEOMETRY`) for real-world lat/long with `STDistance` and `STIntersects`/containment-style predicates for bounds filtering
 - SRID 4326 (WGS 84) — the GPS standard
 - `DATETIMEOFFSET` for `EventDate` so historical dates carry timezone context; clients may set past event times explicitly on create/update
 - Spatial index is critical for proximity query performance
