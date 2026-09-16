@@ -277,7 +277,7 @@ builder.Services.AddAuthorization(options =>
 });
 ```
 
-JWT validation alone is not enough: register authorization with a **fallback authenticated policy** so endpoints are not anonymously callable by default, and call `app.UseAuthentication();` plus `app.UseAuthorization();` before mapping endpoints/controllers so the fallback policy is enforced. Apply endpoint metadata / policies for visibility checks (resource-based handlers) and admin-only routes (`CanModerate`). Map the stable caller identity (`iss` + `oid`, or another explicitly linked provider key when `oid` is unavailable) to `Users.UserId` inside the API boundary; do not trust client-supplied user IDs.
+JWT validation alone is not enough: register authorization with a **fallback authenticated policy** so endpoints are not anonymously callable by default, and call `app.UseAuthentication();` plus `app.UseAuthorization();` before mapping endpoints/controllers so the fallback policy is enforced. Apply endpoint metadata / policies for visibility checks (resource-based handlers) and admin-only routes (`CanModerate`, which is intentionally admin-only in this design). Map the stable caller identity (`iss` + `oid`, or another explicitly linked provider key when `oid` is unavailable) to `Users.UserId` inside the API boundary; do not trust client-supplied user IDs.
 
 ### Authorization Model
 
@@ -303,7 +303,7 @@ JWT validation alone is not enough: register authorization with a **fallback aut
 ```
 POST   /api/datapoints                  # Create: title, description, eventDate (past allowed), visibility, exactly one of mapLocation or gpsFixId, optional chainId XOR linkToDataPointId, associationRadiusMeters, tagIds[] + customTagNames[]
 GET    /api/datapoints/nearby           # Proximity search around explicit map-selected coordinates (lat [-90,90], lng [-180,180], radiusMeters 1-50000 default 250, cursorDistanceMeters + cursorDataPointId together or omitted, pageSize default 25 max 100); visibility via JWT user + follow graph
-POST   /api/datapoints/nearby/gps       # Proximity search around a previously consent-validated gpsFixId; same cursor/pageSize contract as /nearby
+GET    /api/datapoints/nearby/gps       # Proximity search around a previously consent-validated gpsFixId; same cursor/pageSize contract as /nearby
 GET    /api/datapoints/in-bounds        # Map viewport query (north/south/east/west, zoom, optional cursor, pageSize default 200 max 500); same visibility rules; low zoom returns server-side clusters, higher zoom returns capped leaf points when the viewport is sufficiently narrow
 GET    /api/datapoints/search/place     # Geocode address/city/state/country via Azure Maps, then return the first bounded nearby/in-bounds result page plus suggested map bounds and continuation cursor
 GET    /api/datapoints/{id}             # Detail + Ready media + tags + chain summary (neighbor counts / adjacent timeline cursors)
@@ -367,7 +367,7 @@ Create accepts exactly one of `mapLocation` or a short-lived server-issued `gpsF
 GET /api/datapoints/nearby?lat=52.52&lng=13.405&radiusMeters=250&pageSize=25&cursorDistanceMeters=87.41&cursorDataPointId=12345
 ```
 
-`/nearby` is for explicit map-selected coordinates. GPS-assisted nearby search uses `POST /api/datapoints/nearby/gps` with a short-lived `gpsFixId`, and the API rejects partial cursors: `cursorDistanceMeters` and `cursorDataPointId` must be supplied together or omitted together.
+`/nearby` is for explicit map-selected coordinates. GPS-assisted nearby search uses `GET /api/datapoints/nearby/gps?gpsFixId=...` with a short-lived `gpsFixId`, and the API rejects partial cursors: `cursorDistanceMeters` and `cursorDataPointId` must be supplied together or omitted together.
 
 ### Design Notes
 
@@ -378,7 +378,7 @@ GET /api/datapoints/nearby?lat=52.52&lng=13.405&radiusMeters=250&pageSize=25&cur
 - Viewport refine: client debounces `moveend`/`zoomend`, calls `/in-bounds`, replaces markers + list, and keeps following continuation cursors while the viewport is unchanged; narrowing the map narrows the query, while low-zoom/world-scale boxes return clusters or a capped page instead of an unbounded raw point list
 - Comments and feed reads are also cursor-bounded so no single request materializes an arbitrarily large thread or followed-user history
 - API/application-layer rate limiting via `AspNetCoreRateLimit` or gateway quotas; Azure Front Door WAF is complementary edge protection, not a substitute for per-user/per-token throttling
-- All read paths (including `/nearby`, `/nearby/gps`, `/in-bounds`, and place search) evaluate visibility with the authenticated caller ID resolved from the JWT (not a client-supplied user id) plus follow relationships
+- All read paths (including `GET /nearby`, `GET /nearby/gps`, `/in-bounds`, and place search) evaluate visibility with the authenticated caller ID resolved from the JWT (not a client-supplied user id) plus follow relationships
 - `/nearby` responses retain the SQL-computed `DistanceMeters` so continuation cursors use `(distance, DataPointId)` from the last returned row
 - GPS-assisted create/search flows rely on server-issued `gpsFixId` handles, not on a client-declared `"source"` enum, as the enforcement boundary for consent
 - OpenAPI/Swagger for API documentation
@@ -448,7 +448,7 @@ This section is the product contract for create/search flows on web and mobile.
 ### 7.2 Searching and exploring data points
 
 1. **Near a location**
-   - Search center = map center / dropped pin through `GET /api/datapoints/nearby`, or a consent-validated GPS fix through `POST /api/datapoints/nearby/gps`.
+   - Search center = map center / dropped pin through `GET /api/datapoints/nearby`, or a consent-validated GPS fix through `GET /api/datapoints/nearby/gps`.
    - User-selected `radiusMeters` (same bounds/default as create association).
    - Search APIs return only points the caller may view, plus continuation cursors; broad map windows may return clusters before raw markers.
 2. **Map + list**
