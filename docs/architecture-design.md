@@ -138,7 +138,7 @@ CREATE TABLE dbo.DataPointTags (
 - **Tags** / **DataPointTags**: many-to-many labels; `IsSystem = 1` rows are the predetermined catalog (seeded), custom tags are user-created with unique normalized names
 - **Media**: `MediaId`, `DataPointId`, `OwnerUserId`, `UploadId`, `BlobPath`, `ThumbnailPath`, `MediaType` (Photo/Video), `Status` (`PendingUpload` / `Quarantined` / `Processing` / `PendingModeration` / `Ready` / `Rejected`), `UploadExpiresUtc`, `SortOrder`; unique constraints on `UploadId` and (`DataPointId`, `BlobPath`); issuing an upload URL creates or refreshes the caller-owned pending reservation for the parent data point, an expiry reaper deletes abandoned pending uploads/blobs, and only `Ready` media is returned on read paths
 - **OutboxMessages**: transactional outbox rows written in the same SQL transaction as media state changes (`OutboxId`, `Type`, `DedupKey`, `Payload`, `CreatedUtc`, `ProcessedUtc`, `Attempts`) with a unique `DedupKey` per upload/work type so queue publication is durable, retryable, and idempotent
-- **Comments**: `CommentId`, `DataPointId`, `UserId`, `Text`, `CreatedUtc`, `ParentCommentId` (threading); writes must enforce that any parent comment belongs to the same `DataPointId` (for example via a composite `(CommentId, DataPointId)` relationship or equivalent transactional validation)
+- **Comments**: `CommentId`, `DataPointId`, `UserId`, `Text`, `CreatedUtc`, nullable `ParentCommentId` (threading); writes must enforce that any parent comment belongs to the same `DataPointId` (for example via a composite `(CommentId, DataPointId)` relationship or equivalent transactional validation), and parent-comment deletes use `ON DELETE SET NULL` plus tombstone/anonymize the erased parent before any optional hard delete so other users' replies remain intact
 - **Reactions**: `ReactionId`, `DataPointId`, `UserId`, `ReactionType` (Like, Love, etc.); unique constraint on (`DataPointId`, `UserId`) means each user has exactly one current reaction per data point and a new reaction replaces the prior value
 - **Follows**: `FollowerId`, `FolloweeId`, `CreatedUtc`; unique constraint on (`FollowerId`, `FolloweeId`)
 - **Reports**: `ReportId`, `ReporterId`, nullable `DataPointId`, nullable `CommentId`, `Reason`, `Status`, `CreatedUtc`; foreign keys enforce valid targets and a CHECK constraint requires exactly one of `DataPointId` or `CommentId` to be non-null
@@ -151,6 +151,7 @@ CREATE TABLE dbo.DataPointTags (
   2. Standalone (unchained) visible data points within *R* that can be merged into a **new** chain with the new point
 - `chainId` and `linkToDataPointId` are mutually exclusive in create/update requests; supplying both is a validation error (HTTP 400).
 - Joining a chain attaches the new row’s `ChainId`; optionally promotes a selected standalone neighbor into the same new chain in one transaction.
+- If empty chains are supported, only the chain creator may add the first node without an existing visible-node proximity match; all later additions use the normal association rules.
 - Chain membership does not require identical coordinates—only proximity of at least one node within the chosen radius at link time.
 - Timeline reads for a chain return all non-deleted members the caller is allowed to see (visibility matrix), ordered by `EventDate DESC`, then `DataPointId DESC`.
 
@@ -304,7 +305,7 @@ JWT validation alone is not enough: register authorization with a **fallback aut
 | View private posts | Author only |
 | Create post | Any authenticated user (GPS/location consent recorded when using device GPS) |
 | Join an existing chain | Any authenticated user who can view at least one proposed chain node |
-| Create a new chain from nearby standalone points | Any authenticated user who can view the proposed nodes; the new chain row records that caller as `CreatedByUserId` |
+| Create a new chain from nearby standalone points | Any authenticated user may create the chain row, but attaching an existing standalone point requires that the caller own that point or have an explicit owner approval/invitation; the new chain row records that caller as `CreatedByUserId` |
 | Attach media to own post | Author only; upload reservation/media row stores `OwnerUserId` matching the parent data point owner |
 | Edit/delete own post | Author only |
 | Comment | Any authenticated user who can view the target post |
@@ -329,8 +330,8 @@ DELETE /api/datapoints/{id}             # Soft-delete own data point
 GET    /api/datapoints/chain-candidates # Given explicit map-selected lat/lng + associationRadiusMeters, list joinable chains and nearby standalone points the caller can see
 GET    /api/datapoints/chain-candidates/gps # Same lookup around a previously consent-validated gpsFixId; never accept raw device GPS coordinates on this route
 GET    /api/chains/{chainId}/timeline   # Chain events ordered by EventDate DESC, DataPointId DESC; cursor = (eventDate, dataPointId) and the seek predicate is < on that descending tuple; includes detail payload suitable for scrubbing a timeline
-POST   /api/chains                      # Explicitly create an empty/titled chain (optional; usually created inline on first linked post)
-POST   /api/chains/{chainId}/datapoints # Add a new data point into an existing chain; request must include exactly one of mapLocation or gpsFixId and still satisfy association radius vs some visible node unless author override policy says otherwise
+POST   /api/chains                      # Explicitly create an empty/titled chain (optional; only the creator may add the first node before any visible-node proximity check exists)
+POST   /api/chains/{chainId}/datapoints # Add a new data point into an existing chain; request must include exactly one of mapLocation or gpsFixId and still satisfy association radius vs some visible node, except for the creator-only first-node add to an empty chain
 
 GET    /api/tags                        # List system tags + caller's recent custom tags (search q= optional)
 POST   /api/tags                        # Create custom tag (idempotent on NormalizedName)
@@ -579,7 +580,7 @@ This section is the product contract for create/search flows on web and mobile.
 - **Consent**: `UserConsents` (or equivalent) stores `UserId`, `Purpose` (`LocationGps`), `PolicyVersion`, `Granted`, `RecordedUtc`, `ClientUtc`, `RevokedUtc`. GPS-assisted create/search requires a non-revoked grant for the current policy version, and the server enforces that rule when minting short-lived `gpsFixId` handles (client prompts alone are not sufficient). Map-pin coordinates remain personal data covered by the privacy policy and retention/erasure flows.
 - **GPS fix retention**: `GpsFixes` are transient personal-location records; each handle expires quickly, a scheduled janitor purges expired rows on a short cadence, and the erasure workflow deletes any remaining fixes immediately.
 - Data retention policy: auto-delete posts after N years (configurable)
-- Right to erasure: `POST /api/users/me/erasure-requests` starts an asynchronous, retryable cleanup workflow that (1) stops issuing new signed media URLs, relies on short token TTLs for any already-issued URLs, deletes blobs/thumbnails, and purges Front Door cache entries (with account-wide user-delegation-key revocation reserved for exceptional blast-radius events), (2) deletes or anonymizes dependent SQL rows in FK-safe order—`GpsFixes`, `UserConsents`, `Follows`, `Reactions`, `Comments`, `Reports`, custom-tag ownership/unused custom tags, the user’s `Media`/`DataPoints`, then empty or tombstone-reassigned `DataPointChains` / retained `Tags` ownership—and only then (3) deletes or scrubs the `Users` row; `GET /api/users/me/erasure-requests/{id}` reports auditable completion status
+- Right to erasure: `POST /api/users/me/erasure-requests` starts an asynchronous, retryable cleanup workflow that (1) stops issuing new signed media URLs, relies on short token TTLs for any already-issued URLs, deletes blobs/thumbnails, and purges Front Door cache entries (with account-wide user-delegation-key revocation reserved for exceptional blast-radius events), (2) tombstones/cancels any queued or yet-to-be-published media work, requires dispatchers/workers to re-read current media/user deletion state before publishing messages or writing thumbnails, and deletes or anonymizes dependent SQL rows in FK-safe order—`GpsFixes`, `UserConsents`, `Follows`, `Reactions`, `Comments`, `Reports`, custom-tag ownership/unused custom tags, the user’s `Media`/`DataPoints`, corresponding `OutboxMessages`, then empty or tombstone-reassigned `DataPointChains` / retained `Tags` ownership—and only then (3) deletes or scrubs the `Users` row; `GET /api/users/me/erasure-requests/{id}` reports auditable completion status
 - Data export: `POST /api/users/me/export-requests` starts a full export job and `GET /api/users/me/export-requests/{id}` returns status plus the authenticated download when ready
 
 ### Application Security
