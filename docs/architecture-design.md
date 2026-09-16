@@ -138,7 +138,7 @@ CREATE TABLE dbo.DataPointTags (
 - **Tags** / **DataPointTags**: many-to-many labels; `IsSystem = 1` rows are the predetermined catalog (seeded), custom tags are user-created with unique normalized names
 - **Media**: `MediaId`, `DataPointId`, `OwnerUserId`, `UploadId`, `BlobPath`, `ThumbnailPath`, `MediaType` (Photo/Video), `Status` (`PendingUpload` / `Quarantined` / `Processing` / `PendingModeration` / `Ready` / `Rejected`), `UploadExpiresUtc`, `SortOrder`; unique constraints on `UploadId` and (`DataPointId`, `BlobPath`); issuing an upload URL creates or refreshes the caller-owned pending reservation for the parent data point, an expiry reaper deletes abandoned pending uploads/blobs, and only `Ready` media is returned on read paths
 - **OutboxMessages**: transactional outbox rows written in the same SQL transaction as media state changes (`OutboxId`, `Type`, `DedupKey`, `Payload`, `CreatedUtc`, `ProcessedUtc`, `Attempts`) with a unique `DedupKey` per upload/work type so queue publication is durable, retryable, and idempotent
-- **Comments**: `CommentId`, `DataPointId`, `UserId`, `Text`, `CreatedUtc`, `ParentCommentId` (threading)
+- **Comments**: `CommentId`, `DataPointId`, `UserId`, `Text`, `CreatedUtc`, `ParentCommentId` (threading); writes must enforce that any parent comment belongs to the same `DataPointId` (for example via a composite `(CommentId, DataPointId)` relationship or equivalent transactional validation)
 - **Reactions**: `ReactionId`, `DataPointId`, `UserId`, `ReactionType` (Like, Love, etc.); unique constraint on (`DataPointId`, `UserId`)
 - **Follows**: `FollowerId`, `FolloweeId`, `CreatedUtc`; unique constraint on (`FollowerId`, `FolloweeId`)
 - **Reports**: `ReportId`, `ReporterId`, nullable `DataPointId`, nullable `CommentId`, `Reason`, `Status`, `CreatedUtc`; foreign keys enforce valid targets and a CHECK constraint requires exactly one of `DataPointId` or `CommentId` to be non-null
@@ -199,7 +199,14 @@ Never accept `userId` from the client request body or query string for authoriza
 ### Proximity Query Example
 
 ```csharp
-var userLocation = new Point(longitude, latitude) { SRID = 4326 };
+if (latitude is < -90 or > 90
+    || longitude is < -180 or > 180
+    || radiusMeters is < 1 or > 50_000
+    || pageSize is < 1 or > 100)
+{
+    return Results.BadRequest("Invalid nearby search parameters.");
+}
+
 // Resolve caller identity server-side from the validated token (iss + oid → the stable user identity key).
 // Never accept currentUserId from the request body/query; clients must not supply caller identity.
 Guid currentUserId = await userDirectory.GetCurrentUserIdAsync(HttpContext.User, cancellationToken);
@@ -210,6 +217,7 @@ if (request.Cursor is not null
 }
 double? cursorDistance = request.Cursor?.DistanceMeters;
 long? cursorDataPointId = request.Cursor?.DataPointId;
+var userLocation = new Point(longitude, latitude) { SRID = 4326 };
 
 // Keep the follow visibility test in SQL via a correlated EXISTS; do not materialize
 // followee ids into application memory and feed them back through Contains(...).
@@ -310,18 +318,19 @@ JWT validation alone is not enough: register authorization with a **fallback aut
 
 ```
 POST   /api/datapoints                  # Create: title, description, eventDate (past allowed), visibility, exactly one of mapLocation or gpsFixId, optional chainId XOR linkToDataPointId, associationRadiusMeters, tagIds[] + customTagNames[]
-GET    /api/datapoints/nearby           # Proximity search around explicit map-selected coordinates (lat [-90,90], lng [-180,180], radiusMeters 1-50000 default 250, cursorDistanceMeters + cursorDataPointId together or omitted, pageSize default 25 max 100); visibility via JWT user + follow graph
-GET    /api/datapoints/nearby/gps       # Proximity search around a previously consent-validated gpsFixId; same cursor/pageSize contract as /nearby
+GET    /api/datapoints/nearby           # Proximity search around explicit map-selected coordinates (lat [-90,90], lng [-180,180], radiusMeters 1-50000 default 250, opaque cursor bound to the same center/radius/pageSize, pageSize default 25 max 100); visibility via JWT user + follow graph
+GET    /api/datapoints/nearby/gps       # Proximity search around a previously consent-validated gpsFixId; same opaque cursor/pageSize contract as /nearby and the cursor is rejected if reused with a different fix or radius
 GET    /api/datapoints/in-bounds        # Map viewport query (north/south/east/west, zoom, mode=clusters|points, viewportToken, cursor, pageSize default 200 max 500); same visibility rules; cluster pages use a stable cluster cursor, point pages use a stable leaf-point cursor, and any viewport/mode change invalidates the prior cursor
 GET    /api/datapoints/search/place     # Geocode address/city/state/country via Azure Maps, then return the first bounded nearby/in-bounds result page plus suggested map bounds and continuation cursor
 GET    /api/datapoints/{id}             # Detail + Ready media + tags + chain summary (neighbor counts / adjacent timeline cursors)
 PUT    /api/datapoints/{id}             # Update own data point (including visibility, eventDate, tags, optional chain relink within rules)
 DELETE /api/datapoints/{id}             # Soft-delete own data point
 
-GET    /api/datapoints/chain-candidates # Given lat/lng + associationRadiusMeters, list joinable chains and nearby standalone points the caller can see
+GET    /api/datapoints/chain-candidates # Given explicit map-selected lat/lng + associationRadiusMeters, list joinable chains and nearby standalone points the caller can see
+GET    /api/datapoints/chain-candidates/gps # Same lookup around a previously consent-validated gpsFixId; never accept raw device GPS coordinates on this route
 GET    /api/chains/{chainId}/timeline   # Chain events ordered by EventDate DESC, DataPointId DESC; cursor = (eventDate, dataPointId) and the seek predicate is < on that descending tuple; includes detail payload suitable for scrubbing a timeline
 POST   /api/chains                      # Explicitly create an empty/titled chain (optional; usually created inline on first linked post)
-POST   /api/chains/{chainId}/datapoints # Add a new data point into an existing chain (location defaults to selected map/GPS point; must satisfy association radius vs some visible node unless author override policy says otherwise)
+POST   /api/chains/{chainId}/datapoints # Add a new data point into an existing chain; request must include exactly one of mapLocation or gpsFixId and still satisfy association radius vs some visible node unless author override policy says otherwise
 
 GET    /api/tags                        # List system tags + caller's recent custom tags (search q= optional)
 POST   /api/tags                        # Create custom tag (idempotent on NormalizedName)
@@ -331,6 +340,7 @@ POST   /api/datapoints/{id}/media/complete # Validate the existing PendingUpload
 POST   /api/datapoints/{id}/comments    # Add comment (caller must be allowed to view the post)
 GET    /api/datapoints/{id}/comments    # List comments oldest-first; cursor = (createdUtc, commentId) and the seek predicate is > on that ascending tuple; pageSize default 50 max 100
 POST   /api/datapoints/{id}/reactions   # Add/update reaction (caller must be allowed to view the post)
+DELETE /api/datapoints/{id}/reactions   # Remove caller's reaction
 
 GET    /api/users/{id}                  # Get user profile
 PUT    /api/users/me                    # Update own profile
@@ -347,6 +357,8 @@ DELETE /api/users/{id}/follow           # Unfollow
 GET    /api/feed                        # Activity feed (followed users' posts), newest-first; cursor = (createdUtc, dataPointId) and the seek predicate is < on that descending tuple; pageSize default 25 max 100
 POST   /api/reports                     # Report content
 GET    /api/moderation/queue            # Admin: moderation queue (CanModerate policy)
+POST   /api/moderation/media/{mediaId}/approve # Admin: idempotently transition PendingModeration media to Ready and publish any finalization work once
+POST   /api/moderation/media/{mediaId}/reject  # Admin: idempotently transition PendingModeration media to Rejected and trigger bounded-retention cleanup
 ```
 
 ### Create request contract (illustrative)
@@ -373,22 +385,22 @@ The request intentionally omits any client-declared `location.source` flag: the 
 ### Nearby search request contract (illustrative)
 
 ```http
-GET /api/datapoints/nearby?lat=52.52&lng=13.405&radiusMeters=250&pageSize=25&cursorDistanceMeters=87.41&cursorDataPointId=12345
+GET /api/datapoints/nearby?lat=52.52&lng=13.405&radiusMeters=250&pageSize=25&cursor=eyJtb2RlIjoibWFwIiwiZGlzdGFuY2VNZXRlcnMiOjg3LjQxLCJkYXRhUG9pbnRJZCI6MTIzNDUsImNlbnRlciI6WzUyLjUyLDEzLjQwNV0sInJhZGl1c01ldGVycyI6MjUwfQ
 ```
 
-`/nearby` is for explicit map-selected coordinates. GPS-assisted nearby search uses `GET /api/datapoints/nearby/gps?gpsFixId=...` with a short-lived `gpsFixId`, and the API rejects partial cursors: `cursorDistanceMeters` and `cursorDataPointId` must be supplied together or omitted together.
+`/nearby` is for explicit map-selected coordinates. GPS-assisted nearby search uses `GET /api/datapoints/nearby/gps?gpsFixId=...` with a short-lived `gpsFixId`. The continuation cursor is opaque and server-issued; it encodes the `(distanceMeters, dataPointId)` seek boundary plus the search mode and bound inputs (map center or `gpsFixId`, radius, page size), and the API rejects any cursor replayed with different bound inputs.
 
 ### Design Notes
 
-- Pagination is cursor-based (not OFFSET) for large result sets; nearby cursors are `(distanceMeters, dataPointId)` with ascending seek `>`, timeline cursors are `(eventDate, dataPointId)` with `EventDate DESC, DataPointId DESC` and seek `<`, feed cursors are `(createdUtc, dataPointId)` with `CreatedUtc DESC, DataPointId DESC` and seek `<`, comments cursors are `(createdUtc, commentId)` with `CreatedUtc ASC, CommentId ASC` and seek `>`, and empty pages return no continuation cursor
+- Pagination is cursor-based (not OFFSET) for large result sets; nearby cursors are opaque, server-issued tokens that bind `(distanceMeters, dataPointId)` to the original center/`gpsFixId`, radius, and page size before applying the ascending seek `>`, timeline cursors are `(eventDate, dataPointId)` with `EventDate DESC, DataPointId DESC` and seek `<`, feed cursors are `(createdUtc, dataPointId)` with `CreatedUtc DESC, DataPointId DESC` and seek `<`, comments cursors are `(createdUtc, commentId)` with `CreatedUtc ASC, CommentId ASC` and seek `>`, and empty pages return no continuation cursor
 - Reject invalid coordinates/radius/page size/bounds with HTTP 400 before `Point(...)`, `STDistance`, and `Take(...)`
-- Bounding-box pre-filter before `STDistance` for map viewport and place-search result windows
+- Bounding-box pre-filter before `STDistance` for map viewport and place-search result windows; when a viewport crosses the antimeridian (`west > east`), split the longitude predicate into west→180 and -180→east ranges while keeping the same viewport token/cursor contract
 - Place search: Azure Maps Search (or equivalent) geocodes the query string → center/bbox → same visibility-filtered spatial query; response includes `mapBounds` so the client can fit all returned points, plus bounded result items (`pageSize` + `cursor`) and clusters when the viewport is too broad for raw markers
 - Viewport refine: client debounces `moveend`/`zoomend`, calls `/in-bounds`, replaces markers + list, and keeps following continuation cursors while the viewport is unchanged; `/in-bounds` explicitly paginates either `mode=clusters` with a stable `(clusterSortKey, clusterId)` cursor or `mode=points` with a stable `(eventDate, dataPointId)` cursor bound to the same `viewportToken`; narrowing the map narrows the query, while low-zoom/world-scale boxes return clusters or a capped page instead of an unbounded raw point list
 - Comments and feed reads are also cursor-bounded so no single request materializes an arbitrarily large thread or followed-user history
 - API/application-layer rate limiting via `AspNetCoreRateLimit` or gateway quotas; Azure Front Door WAF is complementary edge protection, not a substitute for per-user/per-token throttling
 - All read paths (including `GET /nearby`, `GET /nearby/gps`, `/in-bounds`, and place search) evaluate visibility with the authenticated caller ID resolved from the JWT (not a client-supplied user id) plus follow relationships
-- `/nearby` responses retain the SQL-computed `DistanceMeters` so continuation cursors use `(distance, DataPointId)` from the last returned row
+- `/nearby` responses retain the SQL-computed `DistanceMeters` so the server can build the next opaque cursor from `(distance, DataPointId)` without recomputing the boundary client-side
 - GPS-assisted create/search flows rely on server-issued `gpsFixId` handles, not on a client-declared `"source"` enum, as the enforcement boundary for consent
 - OpenAPI/Swagger for API documentation
 - SignalR hub for real-time map updates (post-MVP)
@@ -425,7 +437,7 @@ Client → API (request upload URL)
 - **Thumbnail worker**: queue delivery is at-least-once, so thumbnail blob paths must be deterministic (`media/{userId}/{dataPointId}/thumbnails/{uploadId}.jpg`) across the producer, worker, and signed-read URL builder; if the thumbnail already exists, treat that as success after verifying/upserting metadata, otherwise create it and then upsert metadata without duplicate side effects
 - **Blob SAS**: mint user-delegation SAS tokens with the API managed identity (no retained storage account keys); uploads are constrained to a single canonical blob path with create-only permissions (no overwrite) and must use `If-None-Match: *`; reserve Key Vault for secrets that cannot use identity-based access
 - **Upload networking**: because web/mobile clients upload directly, the Blob service endpoint must remain publicly reachable for the upload container, but anonymous blob access stays disabled and Blob service CORS is configured in IaC for each allowed SPA origin plus the required `PUT`/preflight headers/methods—never wildcard origins—while SAS scope/TTL still restrict access to the intended blob path
-- **CDN**: Azure Front Door Standard/Premium (`azurerm_cdn_frontdoor_*`) for media delivery; issue short-lived, visibility-checked signed/authenticated read URLs and avoid relying on long-lived public CDN URLs as the sole access control
+- **CDN**: Azure Front Door Premium (`azurerm_cdn_frontdoor_*`) for media delivery; the API issues short-lived, visibility-checked read URLs whose query string carries a blob-read SAS for the single canonical object, Front Door forwards that query string to Blob Storage over the selected origin route, and cache TTL never exceeds the SAS expiry so stale authorized objects are not served after revocation
 - **Moderation**: Azure Content Safety or manual review queue for uploaded media while Status remains `PendingModeration` / non-Ready; only moderation-approved media transitions to `Ready`
 - **Thumbnails**: Azure Function on queue trigger using `SixLabors.ImageSharp` for images and FFmpeg or Azure Video Indexer for MP4/MOV frame thumbnails
 
@@ -440,7 +452,7 @@ This section is the product contract for create/search flows on web and mobile.
    - **GPS**: user opts in; client reads device coordinates only after `POST /api/users/me/consents` shows grant for the current location-policy version (or records a new grant), then exchanges that device fix for a short-lived `gpsFixId` via `POST /api/users/me/gps-fixes`. Revocation blocks further GPS use until re-granted.
 2. **Near / association radius**
    - UI control (slider or presets, e.g. 50 m / 100 m / 250 m / 1 km) sets `associationRadiusMeters`.
-   - Client calls `GET /api/datapoints/chain-candidates` for the pin + radius and shows:
+   - Client calls `GET /api/datapoints/chain-candidates` for a dropped pin or `GET /api/datapoints/chain-candidates/gps?gpsFixId=...` for a consent-validated fix; GPS-assisted candidate lookups never accept raw device coordinates on their own route.
      - chains that already have a node within the radius
      - nearby standalone points that can seed a new chain
    - User may: create unlinked, join an existing chain, or link to a standalone neighbor (server creates chain and attaches both).
@@ -607,6 +619,7 @@ This section is the product contract for create/search flows on web and mobile.
 
 ### Phase 3: Media and user lifecycle
 - Blob Storage media upload pipeline with transactional outbox and idempotent thumbnails
+- Admin moderation queue + approve/reject transitions so Phase 3 uploads can move from `PendingModeration` to `Ready` or `Rejected`
 - Keep media non-public until moderation approval exists; owner/admin preview paths may exist, but normal read APIs expose only `Ready` media
 - User data export + erasure request/status flows with background cleanup workers
 
@@ -619,5 +632,5 @@ This section is the product contract for create/search flows on web and mobile.
 ### Phase 5: Mobile + Polish
 - React Native app with the same create/search/timeline UX
 - Push notifications
-- Content moderation
+- Content moderation automation/polish
 - Performance optimization (caching, CDN, spatial index tuning)
