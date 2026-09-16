@@ -140,7 +140,7 @@ CREATE TABLE dbo.DataPointTags (
 
 - A **chain** is an ordered set of data points (by `EventDate`, then `DataPointId`) that share a `ChainId`.
 - When creating a point at location *L* with association radius *R* (meters, user-selected), the API proposes:
-  1. Existing chains that have **any visible node** within `STDistance(node.Location, L) <= R`
+  1. Existing chains that have **any node visible to the caller** within `STDistance(node.Location, L) <= R`; returned chain labels/counts are derived only from that visible subset and never reveal hidden members
   2. Standalone (unchained) visible data points within *R* that can be merged into a **new** chain with the new point
 - Joining a chain attaches the new row’s `ChainId`; optionally promotes a selected standalone neighbor into the same new chain in one transaction.
 - Chain membership does not require identical coordinates—only proximity of at least one node within the chosen radius at link time.
@@ -314,7 +314,7 @@ GET    /api/tags                        # List system tags + caller's recent cus
 POST   /api/tags                        # Create custom tag (idempotent on NormalizedName)
 
 POST   /api/datapoints/{id}/media       # Issue a server-generated uploadId/blob key plus a short-lived, write-only user-delegation Blob SAS (minted via the API managed identity) for media owned by the caller
-POST   /api/datapoints/{id}/media/complete # Validate blob; in one SQL transaction upsert media Status=Quarantined/Processing and write OutboxMessages; retrying dispatcher publishes queue work
+POST   /api/datapoints/{id}/media/complete # Validate blob; failed validation leaves the row Quarantined/Rejected, successful validation upserts Status=Processing and writes OutboxMessages, thumbnail/moderation workers move it to PendingModeration, and only approved media reaches Ready
 POST   /api/datapoints/{id}/comments    # Add comment (caller must be allowed to view the post)
 GET    /api/datapoints/{id}/comments    # List comments oldest-first; cursor = (createdUtc, commentId); pageSize default 50 max 100
 POST   /api/datapoints/{id}/reactions   # Add/update reaction (caller must be allowed to view the post)
@@ -370,7 +370,7 @@ GET /api/datapoints/nearby?lat=52.52&lng=13.405&source=MapPin&radiusMeters=250&p
 - Place search: Azure Maps Search (or equivalent) geocodes the query string → center/bbox → same visibility-filtered spatial query; response includes `mapBounds` so the client can fit all returned points
 - Viewport refine: client debounces `moveend`/`zoomend`, calls `/in-bounds`, replaces markers + list; narrowing the map narrows the query, while low-zoom/world-scale boxes return clusters or a capped page instead of an unbounded raw point list
 - Comments and feed reads are also cursor-bounded so no single request materializes an arbitrarily large thread or followed-user history
-- Rate limiting via `AspNetCoreRateLimit` or Azure Front Door WAF
+- API/application-layer rate limiting via `AspNetCoreRateLimit` or gateway quotas; Azure Front Door WAF is complementary edge protection, not a substitute for per-user/per-token throttling
 - All read paths (including `/nearby`) evaluate visibility with the authenticated caller ID resolved from the JWT (not a client-supplied user id) plus follow relationships
 - `/nearby` responses retain the SQL-computed `DistanceMeters` so continuation cursors use `(distance, DataPointId)` from the last returned row
 - OpenAPI/Swagger for API documentation
