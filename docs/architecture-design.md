@@ -229,7 +229,9 @@ var nearby = await db.DataPoints
     })
     .ToListAsync();
 
-// nextCursor = (nearby.Last.DistanceMeters, nearby.Last.DataPoint.DataPointId)
+// nextCursor = nearby.Count == 0
+//     ? null
+//     : (nearby.Last().DistanceMeters, nearby.Last().DataPoint.DataPointId)
 ```
 
 Chain-candidate lookup for create uses the same visibility predicate and `Distance <= associationRadiusMeters`, grouping matches by `ChainId` (plus standalone neighbors). Timeline queries filter `ChainId == chainId`, apply visibility, and order by `EventDate` / `DataPointId` with a date cursor—not distance.
@@ -369,10 +371,10 @@ Client → API (request upload URL)
        → API uses its managed identity to obtain a user-delegation key and mints a short-lived, write-only Blob SAS for a server-owned uploadId/blob key
        → Client uploads directly to Blob Storage
        → Client confirms upload → API validates the blob exists and matches expected size/signature,
-         then in one SQL transaction create-or-returns the unique media record (Status = Quarantined/Processing)
+         then in one SQL transaction creates or returns the unique media record (Status = Quarantined/Processing)
          and inserts a transactional outbox row for thumbnail work
        → Retrying outbox dispatcher publishes the queue message (at-least-once) until acknowledged
-       → Azure Function (queue trigger) generates thumbnail idempotently to a deterministic path and upserts media thumbnail fields
+       → Azure Function (queue trigger) generates thumbnail idempotently to a deterministic path and creates or updates media thumbnail fields
        → Media.Status becomes Ready only after validation + thumbnail success; read APIs and signed URLs
          only expose Ready media the caller is allowed to see for the parent data point
        → Front Door / signed URLs serve approved thumbnails and media
