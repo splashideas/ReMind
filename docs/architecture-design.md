@@ -125,11 +125,11 @@ CREATE TABLE dbo.DataPointTags (
 
 ### Supporting Tables
 
-- **Users**: profile info, Entra External ID object ID, display name, avatar blob path, bio; user erasure stays asynchronous and only deletes the `Users` row after dependent SQL rows/blob artifacts are removed or reassigned in order (consents, follows, reactions, comments, reports, custom-tag ownership, media/data points, then surviving chain ownership)
+- **Users**: profile info, stable external identity key (`Issuer` + Entra object ID, or another explicitly linked provider key when `oid` is unavailable), display name, avatar blob path, bio; user erasure stays asynchronous and only deletes the `Users` row after dependent SQL rows/blob artifacts are removed or reassigned in order (consents, follows, reactions, comments, reports, custom-tag ownership, media/data points, then surviving chain ownership)
 - **UserConsents**: auditable GPS/location consent grants and revocations (`Purpose`, `PolicyVersion`, `Granted`, timestamps) enforced server-side for GPS-sourced operations
 - **DataPointChains**: logical timeline grouping related events at/near a place; membership is via `DataPoints.ChainId`
 - **Tags** / **DataPointTags**: many-to-many labels; `IsSystem = 1` rows are the predetermined catalog (seeded), custom tags are user-created with unique normalized names
-- **Media**: `MediaId`, `DataPointId`, `UploadId`, `BlobPath`, `ThumbnailPath`, `MediaType` (Photo/Video), `Status` (`PendingUpload` / `Quarantined` / `Processing` / `PendingModeration` / `Ready` / `Rejected`), `SortOrder`; unique constraints on `UploadId` and (`DataPointId`, `BlobPath`); only `Ready` media is returned on read paths
+- **Media**: `MediaId`, `DataPointId`, `OwnerUserId`, `UploadId`, `BlobPath`, `ThumbnailPath`, `MediaType` (Photo/Video), `Status` (`PendingUpload` / `Quarantined` / `Processing` / `PendingModeration` / `Ready` / `Rejected`), `UploadExpiresUtc`, `SortOrder`; unique constraints on `UploadId` and (`DataPointId`, `BlobPath`); issuing an upload URL creates or refreshes the caller-owned pending reservation for the parent data point, and an expiry reaper deletes abandoned pending uploads/blobs; only `Ready` media is returned on read paths
 - **OutboxMessages**: transactional outbox rows written in the same SQL transaction as media state changes (`OutboxId`, `Type`, `Payload`, `CreatedUtc`, `ProcessedUtc`, `Attempts`) so queue publication is durable and retryable
 - **Comments**: `CommentId`, `DataPointId`, `UserId`, `Text`, `CreatedUtc`, `ParentCommentId` (threading)
 - **Reactions**: `ReactionId`, `DataPointId`, `UserId`, `ReactionType` (Like, Love, etc.); unique constraint on (`DataPointId`, `UserId`)
@@ -187,17 +187,15 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 
 ### Caller Identity
 
-Never accept `userId` from the client request body or query string for authorization. Resolve the internal `Users.UserId` server-side from the validated JWT (`oid` / `sub` → `Users.ExternalObjectId`), creating the profile row on first authenticated request if needed. All visibility, ownership, and follow-graph checks use that server-resolved ID only.
+Never accept `userId` from the client request body or query string for authorization. Resolve the internal `Users.UserId` server-side from the validated JWT (`iss` + `oid` → the stable user identity key, or another explicitly linked provider key when `oid` is unavailable), creating the profile row on first authenticated request if needed. All visibility, ownership, and follow-graph checks use that server-resolved ID only.
 
 ### Proximity Query Example
 
 ```csharp
 var userLocation = new Point(longitude, latitude) { SRID = 4326 };
-// Resolve caller identity server-side from the validated token (iss/sub → Users.ExternalObjectId).
+// Resolve caller identity server-side from the validated token (iss + oid → the stable user identity key).
 // Never accept currentUserId from the request body/query; clients must not supply caller identity.
 Guid currentUserId = await userDirectory.GetCurrentUserIdAsync(HttpContext.User, cancellationToken);
-IReadOnlyCollection<Guid> followedAuthorIds =
-    await followService.GetFolloweeIdsAsync(currentUserId, cancellationToken);
 if (request.Cursor is not null
     && (request.Cursor.DistanceMeters is null || request.Cursor.DataPointId is null))
 {
@@ -217,7 +215,8 @@ var nearby = await db.DataPoints
         x.DataPoint.Visibility == Visibility.Public
         || x.DataPoint.UserId == currentUserId
         || (x.DataPoint.Visibility == Visibility.FriendsOnly
-            && followedAuthorIds.Contains(x.DataPoint.UserId)))
+            && db.Follows.Any(f => f.FollowerId == currentUserId
+                && f.FolloweeId == x.DataPoint.UserId)))
     .Where(x => x.Distance <= radiusMeters)
     .Where(x => cursorDistance == null
         || x.Distance > cursorDistance
@@ -276,7 +275,7 @@ builder.Services.AddAuthorization(options =>
 });
 ```
 
-JWT validation alone is not enough: register authorization with a **fallback authenticated policy** so endpoints are not anonymously callable by default. Apply endpoint metadata / policies for visibility checks (resource-based handlers) and admin-only routes (`CanModerate`). Map `User.GetObjectId()` (or equivalent claim) to `Users.UserId` inside the API boundary; do not trust client-supplied user IDs.
+JWT validation alone is not enough: register authorization with a **fallback authenticated policy** so endpoints are not anonymously callable by default, and call `app.UseAuthentication();` plus `app.UseAuthorization();` before mapping endpoints/controllers so the fallback policy is enforced. Apply endpoint metadata / policies for visibility checks (resource-based handlers) and admin-only routes (`CanModerate`). Map the stable caller identity (`iss` + `oid`, or another explicitly linked provider key when `oid` is unavailable) to `Users.UserId` inside the API boundary; do not trust client-supplied user IDs.
 
 ### Authorization Model
 
@@ -288,6 +287,7 @@ JWT validation alone is not enough: register authorization with a **fallback aut
 | Create post | Any authenticated user (GPS/location consent recorded when using device GPS) |
 | Join an existing chain | Any authenticated user who can view at least one proposed chain node |
 | Create a new chain from nearby standalone points | Any authenticated user who can view the proposed nodes; the new chain row records that caller as `CreatedByUserId` |
+| Attach media to own post | Author only; upload reservation/media row stores `OwnerUserId` matching the parent data point owner |
 | Edit/delete own post | Author only |
 | Comment | Any authenticated user who can view the target post |
 | React | Any authenticated user who can view the target post |
@@ -315,7 +315,7 @@ POST   /api/chains/{chainId}/datapoints # Add a new data point into an existing 
 GET    /api/tags                        # List system tags + caller's recent custom tags (search q= optional)
 POST   /api/tags                        # Create custom tag (idempotent on NormalizedName)
 
-POST   /api/datapoints/{id}/media       # Create or return a PendingUpload media row keyed by server-generated uploadId/blob key, then issue a short-lived, write-only user-delegation Blob SAS (minted via the API managed identity) for media owned by the caller
+POST   /api/datapoints/{id}/media       # Author only: create/refresh a caller-owned PendingUpload media row (expiry + canonical blob key) and issue a short-lived, write-only user-delegation Blob SAS minted by the API managed identity
 POST   /api/datapoints/{id}/media/complete # Validate the existing PendingUpload row/blob; failed validation transitions it to Quarantined/Rejected, successful validation moves it to Processing and writes OutboxMessages, thumbnail/moderation workers move it to PendingModeration, and only approved media reaches Ready
 POST   /api/datapoints/{id}/comments    # Add comment (caller must be allowed to view the post)
 GET    /api/datapoints/{id}/comments    # List comments oldest-first; cursor = (createdUtc, commentId); pageSize default 50 max 100
@@ -384,7 +384,9 @@ GET /api/datapoints/nearby?lat=52.52&lng=13.405&source=MapPin&radiusMeters=250&p
 
 ```
 Client → API (request upload URL)
-       → API creates or reuses a PendingUpload media row for a server-owned uploadId/blob key, then uses its managed identity to obtain a user-delegation key and mint a short-lived, write-only Blob SAS
+       → API confirms the caller owns the target data point, creates or refreshes a PendingUpload media row
+         with expiry/canonical blob paths, then uses its managed identity to obtain a user-delegation key
+         and mint a short-lived, write-only Blob SAS for that server-owned uploadId/blob key
        → Client uploads directly to Blob Storage
        → Client confirms upload → API validates the blob exists and matches expected size/signature,
         then in one SQL transaction updates the existing media row to Rejected/Processing as appropriate
@@ -398,12 +400,12 @@ Client → API (request upload URL)
 
 ### Decisions
 
-- **Container structure**: `media/{userId}/{dataPointId}/{uploadId}/{fileName}` with deterministic thumbnail path `media/{userId}/{dataPointId}/{uploadId}/thumb.jpg` derived from `UploadId` (not random names)
+- **Container structure**: originals `media/{userId}/{dataPointId}/{uploadId}/{fileName}` and thumbnails `media/{userId}/{dataPointId}/thumbnails/{uploadId}.jpg` (canonical paths derived from `UploadId`, not random names)
 - **Allowed types**: JPEG, PNG, WebP, MP4, MOV (validate blob signatures/content server-side, not only client-supplied MIME + extension, before publishing)
 - **Max file size**: 50 MB photos, 500 MB videos
-- **Upload identity**: the initial upload call issues the `UploadId`, canonical blob key, and `PendingUpload` row; completion is idempotent on that `UploadId` (unique constraint)
+- **Upload identity**: the initial upload call is author-only, issues the `UploadId`, stores the canonical blob key/expiry on the pending reservation, and completion is idempotent on that `UploadId` (unique constraint); expired pending uploads are reaped so abandoned blobs do not accumulate
 - **Media outbox**: record thumbnail/moderation work in the same SQL transaction as the media row; a retrying dispatcher publishes to the queue so a crash between commit and enqueue cannot leave media permanently unprocessed
-- **Thumbnail worker**: queue delivery is at-least-once, so thumbnail blob paths must be deterministic (`media/{userId}/{dataPointId}/{uploadId}/thumb.jpg`); if the thumbnail already exists, treat that as success after verifying/upserting metadata, otherwise create it and then upsert metadata without duplicate side effects
+- **Thumbnail worker**: queue delivery is at-least-once, so thumbnail blob paths must be deterministic (`media/{userId}/{dataPointId}/thumbnails/{uploadId}.jpg`); if the thumbnail already exists, treat that as success after verifying/upserting metadata, otherwise create it and then upsert metadata without duplicate side effects
 - **Blob SAS**: mint user-delegation SAS tokens with the API managed identity (no retained storage account keys); reserve Key Vault for secrets that cannot use identity-based access
 - **CDN**: Azure Front Door Standard/Premium (`azurerm_cdn_frontdoor_*`) for media delivery; keep the blob origin private where supported and issue short-lived, visibility-checked signed/authenticated read URLs (never store long-lived public CDN URLs as the sole access control)
 - **Moderation**: Azure Content Safety or manual review queue for uploaded media while Status remains `PendingModeration` / non-Ready; only moderation-approved media transitions to `Ready`
@@ -524,7 +526,7 @@ This section is the product contract for create/search flows on web and mobile.
 
 - Add Node.js build step for React SPA (`npm ci`, `npm run build`, `npm test`)
 - Add React Native build validation (TypeScript check, Jest tests)
-- Build and execute the EF Core migration bundle in the database deployment workflow; remove the `ReMind.Database` `azure/sql-action` path before the first database deployment.
+- Build the EF Core migration bundle in CI, then execute it from a VNet-connected/self-hosted runner or Azure-side migration job that can reach private SQL; remove the `ReMind.Database` `azure/sql-action` path before the first database deployment.
 - Playwright tests target React SPA (not Razor), including create (map pin, tags, visibility, chain link) and search (nearby, place, timeline) flows
 - Load testing for proximity and viewport queries (k6 or Azure Load Testing)
 
@@ -549,7 +551,7 @@ This section is the product contract for create/search flows on web and mobile.
 
 ### Application Security
 
-- All secrets in Key Vault; grant ReMind.Api and the thumbnail Function managed identities least-privilege access and use Key Vault references or managed-identity-based SQL connections instead of plaintext app settings
+- All secrets in Key Vault; grant ReMind.Api and the thumbnail Function managed identities least-privilege access and use Key Vault references or managed-identity-based SQL connections instead of plaintext app settings. Prefer Entra-only SQL access; if a bootstrap/break-glass SQL admin credential is still required, provision and rotate it outside Terraform state as an explicit operational exception.
 - CORS restricted to known frontend origins
 - Input validation: sanitize HTML in descriptions, validate file uploads, bound radii/page sizes, normalize tags
 - SQL injection: EF Core parameterization for runtime/ad-hoc queries; allow migration-time raw SQL only for controlled schema operations such as `CREATE SPATIAL INDEX`
