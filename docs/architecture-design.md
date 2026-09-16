@@ -49,12 +49,14 @@ ReMind.sln
 ```sql
 CREATE TABLE dbo.Users (
     UserId           UNIQUEIDENTIFIER PRIMARY KEY,
-    ExternalObjectId NVARCHAR(100) NOT NULL UNIQUE,
+    Issuer           NVARCHAR(200) NOT NULL,
+    ExternalSubject  NVARCHAR(200) NOT NULL,
     DisplayName      NVARCHAR(200) NOT NULL,
     AvatarBlobPath   NVARCHAR(400) NULL,
     Bio              NVARCHAR(1000) NULL,
     CreatedUtc       DATETIME2(7) NOT NULL DEFAULT SYSUTCDATETIME(),
-    DeletedUtc       DATETIME2(7) NULL
+    DeletedUtc       DATETIME2(7) NULL,
+    CONSTRAINT UQ_Users_Issuer_ExternalSubject UNIQUE (Issuer, ExternalSubject)
 );
 
 CREATE TABLE dbo.DataPointChains (
@@ -129,9 +131,9 @@ CREATE TABLE dbo.DataPointTags (
 
 ### Supporting Tables
 
-- **Users**: profile info, stable external identity key (`Issuer` + Entra object ID, or another explicitly linked provider key when `oid` is unavailable), display name, avatar blob path, bio; user erasure stays asynchronous and only deletes or scrubs the `Users` row after dependent SQL rows/blob artifacts are removed or reassigned in order (consents, follows, reactions, comments, reports, custom-tag ownership, media/data points, then any retained `DataPointChains.CreatedByUserId` / `Tags.CreatedByUserId` references via tombstone reassignment)
+- **Users**: profile info, persisted external identity pair (`Issuer`, `ExternalSubject`) mapped from the validated token (`iss` + `oid`, or another explicitly linked provider subject when `oid` is unavailable), display name, avatar blob path, bio; user erasure stays asynchronous and only deletes or scrubs the `Users` row after dependent SQL rows/blob artifacts are removed or reassigned in order (consents, follows, reactions, comments, reports, custom-tag ownership, media/data points, then any retained `DataPointChains.CreatedByUserId` / `Tags.CreatedByUserId` references via tombstone reassignment)
 - **UserConsents**: auditable GPS/location consent grants and revocations (`Purpose`, `PolicyVersion`, `Granted`, timestamps) enforced server-side for GPS-assisted operations
-- **GpsFixes**: short-lived server-issued handles that bind a consent-validated GPS coordinate fix to the current user (`GpsFixId`, `UserId`, `Location`, `CapturedUtc`, `AccuracyMeters`, `ExpiresUtc`); create/search flows reference `gpsFixId` instead of trusting a client-supplied `"source": "Gps"` flag
+- **GpsFixes**: short-lived server-issued handles that bind a consent-validated GPS coordinate fix to the current user (`GpsFixId`, `UserId`, `Location`, `CapturedUtc`, `AccuracyMeters`, `ExpiresUtc`); create/search flows reference `gpsFixId` instead of trusting a client-supplied `"source": "Gps"` flag, expired rows are purged by a scheduled janitor on a short cadence, and any still-present fixes are deleted during user erasure
 - **DataPointChains**: logical timeline grouping related events at/near a place; membership is via `DataPoints.ChainId`
 - **Tags** / **DataPointTags**: many-to-many labels; `IsSystem = 1` rows are the predetermined catalog (seeded), custom tags are user-created with unique normalized names
 - **Media**: `MediaId`, `DataPointId`, `OwnerUserId`, `UploadId`, `BlobPath`, `ThumbnailPath`, `MediaType` (Photo/Video), `Status` (`PendingUpload` / `Quarantined` / `Processing` / `PendingModeration` / `Ready` / `Rejected`), `UploadExpiresUtc`, `SortOrder`; unique constraints on `UploadId` and (`DataPointId`, `BlobPath`); issuing an upload URL creates or refreshes the caller-owned pending reservation for the parent data point, an expiry reaper deletes abandoned pending uploads/blobs, and only `Ready` media is returned on read paths
@@ -209,6 +211,8 @@ if (request.Cursor is not null
 double? cursorDistance = request.Cursor?.DistanceMeters;
 long? cursorDataPointId = request.Cursor?.DataPointId;
 
+// Keep the follow visibility test in SQL via a correlated EXISTS; do not materialize
+// followee ids into application memory and feed them back through Contains(...).
 var nearby = await db.DataPoints
     .Select(d => new
     {
@@ -561,8 +565,9 @@ This section is the product contract for create/search flows on web and mobile.
 
 - Location data is personal data.
 - **Consent**: `UserConsents` (or equivalent) stores `UserId`, `Purpose` (`LocationGps`), `PolicyVersion`, `Granted`, `RecordedUtc`, `ClientUtc`, `RevokedUtc`. GPS-assisted create/search requires a non-revoked grant for the current policy version, and the server enforces that rule when minting short-lived `gpsFixId` handles (client prompts alone are not sufficient). Map-pin coordinates remain personal data covered by the privacy policy and retention/erasure flows.
+- **GPS fix retention**: `GpsFixes` are transient personal-location records; each handle expires quickly, a scheduled janitor purges expired rows on a short cadence, and the erasure workflow deletes any remaining fixes immediately.
 - Data retention policy: auto-delete posts after N years (configurable)
-- Right to erasure: `POST /api/users/me/erasure-requests` starts an asynchronous, retryable cleanup workflow that (1) stops issuing new signed media URLs, relies on short token TTLs for any already-issued URLs, deletes blobs/thumbnails, and purges Front Door cache entries (with account-wide user-delegation-key revocation reserved for exceptional blast-radius events), (2) deletes or anonymizes dependent SQL rows in FK-safe order—`UserConsents`, `Follows`, `Reactions`, `Comments`, `Reports`, custom-tag ownership/unused custom tags, the user’s `Media`/`DataPoints`, then empty or tombstone-reassigned `DataPointChains` / retained `Tags` ownership—and only then (3) deletes or scrubs the `Users` row; `GET /api/users/me/erasure-requests/{id}` reports auditable completion status
+- Right to erasure: `POST /api/users/me/erasure-requests` starts an asynchronous, retryable cleanup workflow that (1) stops issuing new signed media URLs, relies on short token TTLs for any already-issued URLs, deletes blobs/thumbnails, and purges Front Door cache entries (with account-wide user-delegation-key revocation reserved for exceptional blast-radius events), (2) deletes or anonymizes dependent SQL rows in FK-safe order—`GpsFixes`, `UserConsents`, `Follows`, `Reactions`, `Comments`, `Reports`, custom-tag ownership/unused custom tags, the user’s `Media`/`DataPoints`, then empty or tombstone-reassigned `DataPointChains` / retained `Tags` ownership—and only then (3) deletes or scrubs the `Users` row; `GET /api/users/me/erasure-requests/{id}` reports auditable completion status
 - Data export: `POST /api/users/me/export-requests` starts a full export job and `GET /api/users/me/export-requests/{id}` returns status plus the authenticated download when ready
 
 ### Application Security
@@ -609,6 +614,7 @@ This section is the product contract for create/search flows on web and mobile.
 - Follow/unfollow
 - Comments and reactions (gated by post visibility)
 - Activity feed
+- Content reporting
 
 ### Phase 5: Mobile + Polish
 - React Native app with the same create/search/timeline UX
