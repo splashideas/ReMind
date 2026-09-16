@@ -142,6 +142,7 @@ CREATE TABLE dbo.DataPointTags (
 - When creating a point at location *L* with association radius *R* (meters, user-selected), the API proposes:
   1. Existing chains that have **any node visible to the caller** within `STDistance(node.Location, L) <= R`; returned chain labels/counts are derived only from that visible subset and never reveal hidden members
   2. Standalone (unchained) visible data points within *R* that can be merged into a **new** chain with the new point
+- `chainId` and `linkToDataPointId` are mutually exclusive in create/update requests; supplying both is a validation error (HTTP 400).
 - Joining a chain attaches the new row’s `ChainId`; optionally promotes a selected standalone neighbor into the same new chain in one transaction.
 - Chain membership does not require identical coordinates—only proximity of at least one node within the chosen radius at link time.
 - Timeline reads for a chain return all non-deleted members the caller is allowed to see (visibility matrix), ordered by `EventDate`.
@@ -285,7 +286,8 @@ JWT validation alone is not enough: register authorization with a **fallback aut
 | View friends-only posts | Follower of the author |
 | View private posts | Author only |
 | Create post | Any authenticated user (GPS/location consent recorded when using device GPS) |
-| Link post to chain | Any authenticated user who can view at least one proposed chain node; new chain creator becomes `CreatedByUserId` |
+| Join an existing chain | Any authenticated user who can view at least one proposed chain node |
+| Create a new chain from nearby standalone points | Any authenticated user who can view the proposed nodes; the new chain row records that caller as `CreatedByUserId` |
 | Edit/delete own post | Author only |
 | Comment | Any authenticated user who can view the target post |
 | React | Any authenticated user who can view the target post |
@@ -297,7 +299,7 @@ JWT validation alone is not enough: register authorization with a **fallback aut
 ### Endpoints
 
 ```
-POST   /api/datapoints                  # Create: title, description, eventDate (past allowed), visibility, lat/lng OR map-picked point, optional chainId / linkToDataPointId, associationRadiusMeters, tagIds[] + customTagNames[]
+POST   /api/datapoints                  # Create: title, description, eventDate (past allowed), visibility, lat/lng OR map-picked point, optional chainId XOR linkToDataPointId, associationRadiusMeters, tagIds[] + customTagNames[]
 GET    /api/datapoints/nearby           # Proximity search (lat [-90,90], lng [-180,180], source MapPin|Gps, radiusMeters 1-50000 default 250, cursorDistanceMeters + cursorDataPointId together or omitted, pageSize default 25 max 100); source=Gps requires current consent; visibility via JWT user + follow graph
 GET    /api/datapoints/in-bounds        # Map viewport query (north/south/east/west, zoom, optional cursor, pageSize default 200 max 500); same visibility rules; low zoom returns server-side clusters, higher zoom returns capped leaf points when the viewport is sufficiently narrow
 GET    /api/datapoints/search/place     # Geocode address/city/state/country via Azure Maps, then return matching nearby/in-bounds points + suggested map bounds
@@ -313,8 +315,8 @@ POST   /api/chains/{chainId}/datapoints # Add a new data point into an existing 
 GET    /api/tags                        # List system tags + caller's recent custom tags (search q= optional)
 POST   /api/tags                        # Create custom tag (idempotent on NormalizedName)
 
-POST   /api/datapoints/{id}/media       # Issue a server-generated uploadId/blob key plus a short-lived, write-only user-delegation Blob SAS (minted via the API managed identity) for media owned by the caller
-POST   /api/datapoints/{id}/media/complete # Validate blob; failed validation leaves the row Quarantined/Rejected, successful validation upserts Status=Processing and writes OutboxMessages, thumbnail/moderation workers move it to PendingModeration, and only approved media reaches Ready
+POST   /api/datapoints/{id}/media       # Create or return a PendingUpload media row keyed by server-generated uploadId/blob key, then issue a short-lived, write-only user-delegation Blob SAS (minted via the API managed identity) for media owned by the caller
+POST   /api/datapoints/{id}/media/complete # Validate the existing PendingUpload row/blob; failed validation transitions it to Quarantined/Rejected, successful validation moves it to Processing and writes OutboxMessages, thumbnail/moderation workers move it to PendingModeration, and only approved media reaches Ready
 POST   /api/datapoints/{id}/comments    # Add comment (caller must be allowed to view the post)
 GET    /api/datapoints/{id}/comments    # List comments oldest-first; cursor = (createdUtc, commentId); pageSize default 50 max 100
 POST   /api/datapoints/{id}/reactions   # Add/update reaction (caller must be allowed to view the post)
@@ -382,11 +384,11 @@ GET /api/datapoints/nearby?lat=52.52&lng=13.405&source=MapPin&radiusMeters=250&p
 
 ```
 Client → API (request upload URL)
-       → API uses its managed identity to obtain a user-delegation key and mints a short-lived, write-only Blob SAS for a server-owned uploadId/blob key
+       → API creates or reuses a PendingUpload media row for a server-owned uploadId/blob key, then uses its managed identity to obtain a user-delegation key and mint a short-lived, write-only Blob SAS
        → Client uploads directly to Blob Storage
        → Client confirms upload → API validates the blob exists and matches expected size/signature,
-         then in one SQL transaction creates or returns the unique media record (Status = Quarantined/Processing)
-         and inserts a transactional outbox row for thumbnail work
+        then in one SQL transaction updates the existing media row to Rejected/Processing as appropriate
+        and inserts a transactional outbox row for successful thumbnail/moderation work
        → Retrying outbox dispatcher publishes the queue message (at-least-once) until acknowledged
        → Azure Function (queue trigger) generates thumbnail idempotently to a deterministic path and creates or updates media thumbnail fields
        → Media.Status becomes Ready only after validation + thumbnail success + moderation approval; until then it remains PendingModeration or Rejected, and read APIs / signed URLs
@@ -396,12 +398,12 @@ Client → API (request upload URL)
 
 ### Decisions
 
-- **Container structure**: `media/{userId}/{dataPointId}/{uploadId}/{fileName}` with deterministic thumbnail path `.../thumb.jpg` derived from `UploadId` (not random names)
+- **Container structure**: `media/{userId}/{dataPointId}/{uploadId}/{fileName}` with deterministic thumbnail path `media/{userId}/{dataPointId}/{uploadId}/thumb.jpg` derived from `UploadId` (not random names)
 - **Allowed types**: JPEG, PNG, WebP, MP4, MOV (validate blob signatures/content server-side, not only client-supplied MIME + extension, before publishing)
 - **Max file size**: 50 MB photos, 500 MB videos
-- **Upload identity**: the initial upload call issues the `UploadId` and canonical blob key; completion is idempotent on that `UploadId` (unique constraint)
+- **Upload identity**: the initial upload call issues the `UploadId`, canonical blob key, and `PendingUpload` row; completion is idempotent on that `UploadId` (unique constraint)
 - **Media outbox**: record thumbnail/moderation work in the same SQL transaction as the media row; a retrying dispatcher publishes to the queue so a crash between commit and enqueue cannot leave media permanently unprocessed
-- **Thumbnail worker**: queue delivery is at-least-once, so thumbnail blob paths must be deterministic (`media/{userId}/{dataPointId}/thumbnails/{uploadId}.jpg`); if the thumbnail already exists, treat that as success after verifying/upserting metadata, otherwise create it and then upsert metadata without duplicate side effects
+- **Thumbnail worker**: queue delivery is at-least-once, so thumbnail blob paths must be deterministic (`media/{userId}/{dataPointId}/{uploadId}/thumb.jpg`); if the thumbnail already exists, treat that as success after verifying/upserting metadata, otherwise create it and then upsert metadata without duplicate side effects
 - **Blob SAS**: mint user-delegation SAS tokens with the API managed identity (no retained storage account keys); reserve Key Vault for secrets that cannot use identity-based access
 - **CDN**: Azure Front Door Standard/Premium (`azurerm_cdn_frontdoor_*`) for media delivery; keep the blob origin private where supported and issue short-lived, visibility-checked signed/authenticated read URLs (never store long-lived public CDN URLs as the sole access control)
 - **Moderation**: Azure Content Safety or manual review queue for uploaded media while Status remains `PendingModeration` / non-Ready; only moderation-approved media transitions to `Ready`
