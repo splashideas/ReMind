@@ -143,14 +143,14 @@ CREATE TABLE dbo.DataPointTags (
 
 ### Chain Association Rules
 
-- A **chain** is an ordered set of data points (by `EventDate`, then `DataPointId`) that share a `ChainId`.
+- A **chain** is an ordered set of data points (by `EventDate DESC`, then `DataPointId DESC`) that share a `ChainId`.
 - When creating a point at location *L* with association radius *R* (meters, user-selected), the API proposes:
   1. Existing chains that have **any node visible to the caller** within `STDistance(node.Location, L) <= R`; returned chain labels/counts are derived only from that visible subset and never reveal hidden members
   2. Standalone (unchained) visible data points within *R* that can be merged into a **new** chain with the new point
 - `chainId` and `linkToDataPointId` are mutually exclusive in create/update requests; supplying both is a validation error (HTTP 400).
 - Joining a chain attaches the new row’s `ChainId`; optionally promotes a selected standalone neighbor into the same new chain in one transaction.
 - Chain membership does not require identical coordinates—only proximity of at least one node within the chosen radius at link time.
-- Timeline reads for a chain return all non-deleted members the caller is allowed to see (visibility matrix), ordered by `EventDate`.
+- Timeline reads for a chain return all non-deleted members the caller is allowed to see (visibility matrix), ordered by `EventDate DESC`, then `DataPointId DESC`.
 
 ### Tag Rules
 
@@ -245,7 +245,7 @@ var nearby = await db.DataPoints
 //     : (nearby.Last().DistanceMeters, nearby.Last().DataPoint.DataPointId)
 ```
 
-Chain-candidate lookup for create uses the same visibility predicate and `Distance <= associationRadiusMeters`, grouping matches by `ChainId` (plus standalone neighbors). Timeline queries filter `ChainId == chainId`, apply visibility, and order by `EventDate` / `DataPointId` with a date cursor—not distance.
+Chain-candidate lookup for create uses the same visibility predicate and `Distance <= associationRadiusMeters`, grouping matches by `ChainId` (plus standalone neighbors). Timeline queries filter `ChainId == chainId`, apply visibility, and order by `EventDate DESC` / `DataPointId DESC` with a date cursor—not distance.
 
 ### Migration Strategy
 
