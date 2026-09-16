@@ -45,6 +45,16 @@ ReMind.sln
 ### DataPoints Table (Redesigned)
 
 ```sql
+CREATE TABLE dbo.Users (
+    UserId           UNIQUEIDENTIFIER PRIMARY KEY,
+    ExternalObjectId NVARCHAR(100) NOT NULL UNIQUE,
+    DisplayName      NVARCHAR(200) NOT NULL,
+    AvatarBlobPath   NVARCHAR(400) NULL,
+    Bio              NVARCHAR(1000) NULL,
+    CreatedUtc       DATETIME2(7) NOT NULL DEFAULT SYSUTCDATETIME(),
+    DeletedUtc       DATETIME2(7) NULL
+);
+
 CREATE TABLE dbo.DataPoints (
     DataPointId     BIGINT IDENTITY(1,1) PRIMARY KEY,
     UserId          UNIQUEIDENTIFIER NOT NULL,
@@ -57,7 +67,10 @@ CREATE TABLE dbo.DataPoints (
     Visibility      TINYINT NOT NULL DEFAULT 0,  -- 0=Public, 1=FriendsOnly, 2=Private
     IsDeleted       BIT NOT NULL DEFAULT 0,
     CONSTRAINT CK_DataPoints_Location_SRID CHECK (Location.STSrid = 4326),
-    CONSTRAINT CK_DataPoints_Visibility CHECK (Visibility IN (0, 1, 2))
+    CONSTRAINT CK_DataPoints_Visibility CHECK (Visibility IN (0, 1, 2)),
+    CONSTRAINT FK_DataPoints_Users FOREIGN KEY (UserId)
+        REFERENCES dbo.Users (UserId)
+        ON DELETE NO ACTION
 );
 
 CREATE SPATIAL INDEX IX_DataPoints_Location
@@ -67,8 +80,8 @@ USING GEOGRAPHY_AUTO_GRID;
 
 ### Supporting Tables
 
-- **Users**: profile info, Entra External ID object ID, display name, avatar URL, bio
-- **Media**: `MediaId`, `DataPointId`, `BlobUrl`, `ThumbnailUrl`, `MediaType` (Photo/Video), `SortOrder`
+- **Users**: profile info, Entra External ID object ID, display name, avatar blob path, bio; user erasure stays asynchronous and only deletes the `Users` row after dependent posts/media cleanup finishes
+- **Media**: `MediaId`, `DataPointId`, `UploadId`, `BlobPath`, `ThumbnailPath`, `MediaType` (Photo/Video), `SortOrder`; unique constraints on `UploadId` and (`DataPointId`, `BlobPath`)
 - **Comments**: `CommentId`, `DataPointId`, `UserId`, `Text`, `CreatedUtc`, `ParentCommentId` (threading)
 - **Reactions**: `ReactionId`, `DataPointId`, `UserId`, `ReactionType` (Like, Love, etc.); unique constraint on (`DataPointId`, `UserId`)
 - **Follows**: `FollowerId`, `FolloweeId`, `CreatedUtc`; unique constraint on (`FollowerId`, `FolloweeId`)
@@ -107,6 +120,8 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 
 ```csharp
 var userLocation = new Point(longitude, latitude) { SRID = 4326 };
+Guid currentUserId = request.UserId;
+IReadOnlyCollection<Guid> followedAuthorIds = await followService.GetFolloweeIdsAsync(currentUserId, cancellationToken);
 double? cursorDistance = request.Cursor?.DistanceMeters;
 long? cursorDataPointId = request.Cursor?.DataPointId;
 
@@ -116,7 +131,12 @@ var nearby = await db.DataPoints
         DataPoint = d,
         Distance = d.Location.Distance(userLocation)
     })
-    .Where(x => !x.DataPoint.IsDeleted && x.DataPoint.Visibility == Visibility.Public)
+    .Where(x => !x.DataPoint.IsDeleted)
+    .Where(x =>
+        x.DataPoint.Visibility == Visibility.Public
+        || x.DataPoint.UserId == currentUserId
+        || (x.DataPoint.Visibility == Visibility.FriendsOnly
+            && followedAuthorIds.Contains(x.DataPoint.UserId)))
     .Where(x => x.Distance <= radiusMeters)
     .Where(x => cursorDistance == null
         || x.Distance > cursorDistance
@@ -174,19 +194,23 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 
 ```
 POST   /api/datapoints                  # Create a data point
-GET    /api/datapoints/nearby           # Proximity search (latitude [-90,90], longitude [-180,180], radiusMeters 1-50000, cursor, pageSize default 25 max 100)
+GET    /api/datapoints/nearby           # Proximity search (latitude [-90,90], longitude [-180,180], radiusMeters 1-50000, cursor, pageSize default 25 max 100, visibility enforced against caller + follow graph)
 GET    /api/datapoints/{id}             # Get single data point with media
 PUT    /api/datapoints/{id}             # Update own data point
 DELETE /api/datapoints/{id}             # Soft-delete own data point
 
-POST   /api/datapoints/{id}/media       # Short-lived, write-only SAS for media owned by the caller
-POST   /api/datapoints/{id}/media/complete # Validate uploaded blob metadata, create the media record, and enqueue thumbnail work
+POST   /api/datapoints/{id}/media       # Issue a server-generated uploadId/blob key plus a short-lived, write-only SAS for media owned by the caller
+POST   /api/datapoints/{id}/media/complete # Validate uploaded blob metadata for the uploadId, create-or-return the unique media record, and enqueue thumbnail work once
 POST   /api/datapoints/{id}/comments    # Add comment
 GET    /api/datapoints/{id}/comments    # List comments
 POST   /api/datapoints/{id}/reactions   # Add/update reaction
 
 GET    /api/users/{id}                  # Get user profile
 PUT    /api/users/me                    # Update own profile
+POST   /api/users/me/export-requests    # Request a full user-data export job
+GET    /api/users/me/export-requests/{id} # Check export status and download when ready
+POST   /api/users/me/erasure-requests   # Request async user-data erasure across SQL, blobs, thumbnails, and CDN caches
+GET    /api/users/me/erasure-requests/{id} # Check erasure status until auditable completion
 PUT    /api/users/{id}/follow           # Follow
 DELETE /api/users/{id}/follow           # Unfollow
 
@@ -201,6 +225,7 @@ GET    /api/moderation/queue            # Admin: moderation queue
 - Reject invalid nearby-query coordinates/radius/page size with HTTP 400 and enforce the documented bounds before `Point(...)`, `STDistance`, and `Take(...)`
 - Bounding-box pre-filter before `STDistance` for map viewport queries
 - Rate limiting via `AspNetCoreRateLimit` or Azure Front Door WAF
+- `/nearby` always evaluates visibility with the authenticated caller ID plus follow relationships before returning rows
 - OpenAPI/Swagger for API documentation
 - SignalR hub for real-time map updates (post-MVP)
 
@@ -210,9 +235,9 @@ GET    /api/moderation/queue            # Admin: moderation queue
 
 ```
 Client → API (request upload URL)
-       → API generates SAS token for Blob Storage
+       → API generates a server-owned uploadId/blob key plus a SAS token for Blob Storage
        → Client uploads directly to Blob Storage
-       → Client confirms upload → API validates the blob exists, matches expected size/signature, saves the media record, and enqueues thumbnail processing
+       → Client confirms upload → API validates the blob exists, matches expected size/signature, creates-or-returns the unique media record for that uploadId, and enqueues thumbnail processing once
        → Azure Function (queue trigger) generates thumbnail
        → CDN serves thumbnails and media
 ```
@@ -222,7 +247,8 @@ Client → API (request upload URL)
 - **Container structure**: `media/{userId}/{dataPointId}/{fileName}`
 - **Allowed types**: JPEG, PNG, WebP, MP4, MOV (validate blob signatures/content server-side, not only client-supplied MIME + extension, before publishing)
 - **Max file size**: 50 MB photos, 500 MB videos
-- **CDN**: Azure Front Door or Azure CDN for media delivery; keep the blob origin private where supported and issue short-lived, visibility-checked signed/authenticated read URLs
+- **Upload identity**: the initial upload call issues the `UploadId` and canonical blob key, and completion is idempotent on that `UploadId`
+- **CDN**: Azure Front Door Standard/Premium (`azurerm_cdn_frontdoor_*`) for media delivery; keep the blob origin private where supported and issue short-lived, visibility-checked signed/authenticated read URLs
 - **Moderation**: Azure Content Safety or manual review queue for uploaded media
 - **Thumbnails**: Azure Function on queue trigger using `SixLabors.ImageSharp` for images and FFmpeg or Azure Video Indexer for MP4/MOV thumbnails
 
@@ -252,7 +278,7 @@ Client → API (request upload URL)
 | Resource | Purpose |
 |---|---|
 | `azurerm_storage_account` (media) | User-uploaded photos/videos |
-| `azurerm_cdn_frontdoor_profile` + endpoint/origin/route | Media delivery |
+| `azurerm_cdn_frontdoor_profile` + endpoint/origin-group/origin/route (Standard/Premium) | Media delivery |
 | `azurerm_key_vault` | Secrets (SQL connection string, SAS keys) |
 | `azurerm_application_insights` | Monitoring and diagnostics |
 | `azurerm_log_analytics_workspace` | Centralized logging |
@@ -300,15 +326,15 @@ Client → API (request upload URL)
 
 - Location data is personal data — require explicit consent before collecting GPS
 - Data retention policy: auto-delete posts after N years (configurable)
-- Right to erasure: delete user data, media/thumbnail blobs, and cached media through an asynchronous, retryable cleanup workflow with auditable completion status
-- Data export: allow users to download all their data
+- Right to erasure: `POST /api/users/me/erasure-requests` starts an asynchronous, retryable cleanup workflow that deletes user data, media/thumbnail blobs, and cached media, while `GET /api/users/me/erasure-requests/{id}` reports auditable completion status
+- Data export: `POST /api/users/me/export-requests` starts a full export job and `GET /api/users/me/export-requests/{id}` returns status plus the authenticated download when ready
 
 ### Application Security
 
 - All secrets in Key Vault; grant ReMind.Api and the thumbnail Function managed identities least-privilege access and use Key Vault references or managed-identity-based connections instead of plaintext app settings
 - CORS restricted to known frontend origins
 - Input validation: sanitize HTML in descriptions, validate file uploads
-- SQL injection: EF Core parameterization (eliminate remaining raw SQL)
+- SQL injection: EF Core parameterization for runtime/ad-hoc queries; allow migration-time raw SQL only for controlled schema operations such as `CREATE SPATIAL INDEX`
 - Rate limiting on auth endpoints and media upload
 - Content Security Policy headers on the React SPA
 
@@ -336,6 +362,7 @@ Client → API (request upload URL)
 - Follow/unfollow
 - Comments and reactions
 - Activity feed
+- User data export + erasure request/status flows with background cleanup workers
 
 ### Phase 4: Mobile + Polish
 - React Native app with map
