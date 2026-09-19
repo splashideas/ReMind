@@ -90,11 +90,13 @@ CREATE TABLE dbo.Users (
 
 -- Dedicated avatar-upload reservation rows (required — Users.AvatarUploadId alone cannot hold
 -- ClientRequestId, ReservedBytes, expiry, status, or staging/canonical paths under concurrent replace).
+-- AvatarUploads.Status: 0=PendingUpload 1=Quarantined 2=Processing 3=PendingModeration 4=Ready 5=Rejected
+-- Non-terminal (live/charged) statuses are 0–3; Ready and Rejected are terminal.
 CREATE TABLE dbo.AvatarUploads (
     UploadId              UNIQUEIDENTIFIER PRIMARY KEY,
     OwnerUserId           UNIQUEIDENTIFIER NOT NULL,
     ClientRequestId       NVARCHAR(100) NOT NULL, -- idempotency key unique per owner while reservation is live
-    Status                TINYINT NOT NULL, -- PendingUpload / Quarantined / Processing / PendingModeration / Ready / Rejected
+    Status                TINYINT NOT NULL, -- 0=PendingUpload 1=Quarantined 2=Processing 3=PendingModeration 4=Ready 5=Rejected
     ReservedBytes         BIGINT NOT NULL, -- photo per-type max charged against Users.PendingReservedBytes
     RequestedSizeBytes    BIGINT NOT NULL, -- client expected size only (<= ReservedBytes)
     StagingBlobPath       NVARCHAR(400) NOT NULL,
@@ -111,13 +113,18 @@ CREATE TABLE dbo.AvatarUploads (
         ON DELETE NO ACTION,
     CONSTRAINT UQ_AvatarUploads_Owner_ClientRequestId UNIQUE (OwnerUserId, ClientRequestId),
     CONSTRAINT CK_AvatarUploads_ReservedBytes_Positive CHECK (ReservedBytes > 0),
-    CONSTRAINT CK_AvatarUploads_Requested_Within_Reserved CHECK (RequestedSizeBytes > 0 AND RequestedSizeBytes <= ReservedBytes)
+    CONSTRAINT CK_AvatarUploads_Requested_Within_Reserved CHECK (RequestedSizeBytes > 0 AND RequestedSizeBytes <= ReservedBytes),
+    CONSTRAINT CK_AvatarUploads_Status_Range CHECK (Status BETWEEN 0 AND 5)
 );
 
 CREATE INDEX IX_AvatarUploads_Owner_Status_Expires
 ON dbo.AvatarUploads (OwnerUserId, Status, UploadExpiresUtc);
--- Also add a filtered unique invariant for non-terminal avatar reservations (e.g. one live row per OwnerUserId)
--- and perform init/replace under a lock/serializable recheck so concurrent requests cannot create two charged rows.
+
+-- Database-enforced one-live-reservation invariant (non-terminal Status 0–3 only).
+-- Init/replace still runs under a lock/serializable recheck so cancel/release/debit/insert cannot race the filtered unique index.
+CREATE UNIQUE INDEX UQ_AvatarUploads_OneLivePerOwner
+ON dbo.AvatarUploads (OwnerUserId)
+WHERE Status IN (0, 1, 2, 3);
 
 CREATE TABLE dbo.DataPointChains (
     ChainId         UNIQUEIDENTIFIER PRIMARY KEY,
@@ -923,7 +930,7 @@ Unless an environment override is documented in app configuration, implementatio
   2. Mark user/media/`AvatarUploads` deleting (lease/version); stop issuing new signed URLs (short TTLs drain old ones).
   3. Tombstone/cancel queued media work; fence dispatchers/workers on the deleting lease before publish/thumbnail writes.
   4. Delete blobs/thumbnails; purge Front Door cache; final blob sweep after drain.
-  5. FK-safe SQL cleanup: `GpsFixes`, `UserConsents`, `Follows`, `Reactions`, `Reports`, custom-tag ownership/unused custom tags, `Media`/`AvatarUploads`, comments on deleted data points, and the user's own `DataPoints`; comments that still survive on retained data points are reassigned to the deploy-time system tombstone user before deleting `Users`, related `OutboxMessages`, or retained ownership on `DataPointChains`/`Tags`.
+  5. FK-safe SQL cleanup: `GpsFixes`, `UserConsents`, `Follows`, `Reactions`, `Reports`, custom-tag ownership/unused custom tags, `Media`/`AvatarUploads`, comments on deleted data points, the user's own `DataPoints`, and `UserExportRequests` (delete any associated export archive blob under `DownloadBlobPath` first, then the export rows—`ON DELETE NO ACTION` otherwise blocks `Users` deletion and can leave a personal-data archive behind); comments that still survive on retained data points are reassigned to the deploy-time system tombstone user before deleting `Users`, related `OutboxMessages`, or retained ownership on `DataPointChains`/`Tags`.
   6. **Before** scrubbing `Users`, insert `ErasedSubjectHashes` for `HMAC-SHA-256(SubjectPseudonymKey[current], Issuer || 0x00 || ExternalSubject)` with the current `KeyVersion`, keyed to the erasure request (idempotent).
   7. Scrub/delete the `Users` row (clear `UserErasureRequests.UserId` if needed); mark request Completed.
   8. **Status**: `GET /api/erasure-requests/{id}` is `AllowAnonymous` + receipt-only (constant-time hash compare), rate-limited per §8. JWT must not authorize, JIT, or recreate profiles. Never authorize by path id alone or tombstone-subject matching.
