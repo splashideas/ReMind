@@ -29,12 +29,13 @@ jobs:
       - name: Verify GitHub CLI
         run: gh --version
 
+      - name: Verify jq
+        run: jq --version
+
       - name: Seed labels and architecture issues
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq jq
           chmod +x .github/architecture-issues/seed-issues.sh
           .github/architecture-issues/seed-issues.sh
