@@ -26,6 +26,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify GitHub CLI
+        run: gh --version
+
       - name: Seed labels and architecture issues
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
