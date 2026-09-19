@@ -79,7 +79,7 @@ CREATE TABLE dbo.DataPoints (
     Location        GEOGRAPHY NOT NULL,
     CreatedUtc      DATETIME2(7) NOT NULL DEFAULT SYSUTCDATETIME(),
     UpdatedUtc      DATETIME2(7) NULL,
-    Visibility      TINYINT NOT NULL DEFAULT 0,  -- 0=Public, 1=FollowersOnly, 2=Private
+    Visibility      TINYINT NOT NULL,  -- 0=Public, 1=FollowersOnly, 2=Private; no DB default — omission fails validation (create UX requires explicit choice)
     IsDeleted       BIT NOT NULL DEFAULT 0,
     CONSTRAINT CK_DataPoints_Location_SRID CHECK (Location.STSrid = 4326),
     CONSTRAINT CK_DataPoints_Visibility CHECK (Visibility IN (0, 1, 2)),
@@ -324,7 +324,7 @@ JWT validation alone is not enough: register authorization with a **fallback aut
 | Comment | Any authenticated user who can view the target post |
 | React | Any authenticated user who can view the target post |
 | Tag own post | Author only |
-| Report | Any authenticated user |
+| Report | Any authenticated user who can view the target post/comment; nonexistent and non-visible targets both return the same not-found response so sequential IDs cannot be probed |
 | Moderate | Admin role (custom claim) |
 ## 5. API Design
 
@@ -363,18 +363,18 @@ POST   /api/users/me/consents           # Record location/GPS consent (purpose, 
 GET    /api/users/me/consents           # Current consent state used to gate GPS-assisted create/search
 POST   /api/users/me/export-requests    # Request a full user-data export job
 GET    /api/users/me/export-requests/{id} # Check the durable export-request state machine and download when ready
-POST   /api/users/me/erasure-requests   # Request async user-data erasure across SQL, blobs, thumbnails, and CDN caches
-GET    /api/users/me/erasure-requests/{id} # Check the durable erasure-request state machine until auditable completion
+POST   /api/users/me/erasure-requests   # Request async user-data erasure across SQL, blobs, thumbnails, and CDN caches; response returns a one-time opaque status receipt (shown once; not guessable from the request id) that the client must store out-of-band
+GET    /api/users/me/erasure-requests/{id} # Check the durable erasure-request state machine until auditable completion; require the opaque receipt via a non-URL channel (e.g. `X-Erasure-Receipt` header or POST-style body on a dedicated status action)—never authorize by path id alone
 PUT    /api/users/{id}/follow           # Follow
 DELETE /api/users/{id}/follow           # Unfollow
 
 GET    /api/feed                        # Activity feed (followed users' posts), newest-first; cursor = (createdUtc, dataPointId) and the seek predicate is < on that descending tuple; pageSize default 25 max 100
-POST   /api/reports                     # Report content
+POST   /api/reports                     # Report content (caller must be allowed to view the target; same not-found for missing and non-visible targets)
 GET    /api/moderation/queue            # Admin: moderation queue (CanModerate policy)
 POST   /api/moderation/datapoints/{id}/hide # Admin: hide/tombstone a reported data point and resolve linked open reports idempotently
 POST   /api/moderation/comments/{id}/hide   # Admin: hide/tombstone a reported comment and resolve linked open reports idempotently
 POST   /api/moderation/media/{mediaId}/approve # Admin: idempotently record moderation approval; a separate finalization step promotes media to Ready only after validation + thumbnail success are already complete
-POST   /api/moderation/media/{mediaId}/reject  # Admin: idempotently transition PendingModeration media to Rejected and trigger bounded-retention cleanup
+POST   /api/moderation/media/{mediaId}/reject  # Admin: idempotently transition PendingModeration or Quarantined media to Rejected and trigger bounded-retention cleanup
 POST   /api/moderation/reports/{reportId}/dismiss # Admin: dismiss an open report without hiding the target and record the status transition
 ```
 
@@ -442,7 +442,7 @@ Client → API (request upload URL with requestedSizeBytes + media type)
         and, only on the first `PendingUpload` → `Processing` / `PendingModeration` transition, inserts exactly one transactional outbox row for successful malware-scan/thumbnail/moderation work keyed by `UploadId` + work type
        → Retrying outbox dispatcher publishes the queue message (at-least-once) until acknowledged
        → Expired `PendingUpload` rows/blobs (releasing their `ReservedBytes`), expired `Quarantined` manual holds, and bounded-retention `Rejected` artifacts are removed by a janitor that deletes both blob objects and media metadata
-       → Queue worker obtains a clean malware-scan verdict before any ImageSharp/FFmpeg parse; malicious results reject the upload, while failed/timed-out scans keep the object non-Ready in quarantine/hold without parsing or serving it until a clean rescan or explicit operator rejection
+       → Queue worker obtains a clean malware-scan verdict before any ImageSharp/FFmpeg parse; malicious results reject the upload, while failed/timed-out scans keep the object non-Ready in `Quarantined` without parsing or serving it until a clean rescan or an operator reject via `POST /api/moderation/media/{mediaId}/reject`
        → Azure Function (queue trigger) generates thumbnail idempotently to the canonical path `media/{userId}/{dataPointId}/thumbnails/{uploadId}.jpg`, updates media thumbnail fields, and records `ThumbnailReadyUtc`
        → Media.Status becomes Ready only in a separate idempotent finalization transaction after validation + clean malware verdict + thumbnail success + moderation approval are all recorded; until then it remains non-public
         (`PendingModeration`, `Quarantined`, or `Rejected` as appropriate), and read APIs / signed URLs only expose Ready media
@@ -462,7 +462,7 @@ Client → API (request upload URL with requestedSizeBytes + media type)
 - **Blob SAS**: mint user-delegation SAS tokens with the API managed identity (no retained storage account keys); uploads are constrained to a single staging blob path with create + write permissions so chunked `Put Block` / `Put Block List` uploads work, the initial create must use `If-None-Match: *`, and completion validates the staging blob's ETag/size/hash then conditionally seals that exact validated ETag by copying it to the server-write-only canonical blob key before any processing or publish step; workers/read URLs never use the staging object, and Key Vault remains only for secrets that cannot use identity-based access
 - **Upload networking**: because web/mobile clients upload directly, the Blob service endpoint must remain publicly reachable for the upload container, but anonymous blob access stays disabled and Blob service CORS is configured in IaC for each allowed SPA origin plus the required `PUT`/preflight headers/methods—never wildcard origins—while SAS scope/TTL still restrict access to the intended blob path
 - **CDN**: Azure Front Door Premium (`azurerm_cdn_frontdoor_*`) for media delivery; the API issues short-lived, visibility-checked read URLs whose query string carries a blob-read SAS for the single canonical object, Front Door forwards that full SAS query string to Blob Storage over the selected origin route and, whenever caching is enabled for these media routes, the cache key must vary on the full SAS query string so requests without that authorization cannot reuse an authorized response; cache TTL never exceeds the SAS expiry so stale authorized objects are not served after revocation
-- **Moderation**: Azure Content Safety or manual review queue for uploaded media while Status remains `PendingModeration` / non-Ready; admin approval records moderation state, and a finalizer performs the single idempotent transition to `Ready` only after a clean `MalwareScanVerdict`, `ModerationApprovedUtc`, and `ThumbnailReadyUtc` are all present
+- **Moderation**: Azure Content Safety or manual review queue for uploaded media while Status remains `PendingModeration` / non-Ready; admin approval records moderation state, operators may reject from either `PendingModeration` or `Quarantined` into `Rejected`, and a finalizer performs the single idempotent transition to `Ready` only after a clean `MalwareScanVerdict`, `ModerationApprovedUtc`, and `ThumbnailReadyUtc` are all present
 - **Thumbnails**: Azure Function on queue trigger using `SixLabors.ImageSharp` for images and FFmpeg or Azure Video Indexer for MP4/MOV frame thumbnails
 
 ## 7. Data Point User Experience
@@ -483,7 +483,7 @@ This section is the product contract for create/search flows on web and mobile.
 3. **Historical date/time**
    - Date-time picker allows past `eventDate` values (`DATETIMEOFFSET`); validation rejects impossible calendar values but not “old” dates.
 4. **Visibility**
-   - Explicit control: Public / Followers-only / Private (maps to `Visibility` tinyint).
+   - Explicit control: Public / Followers-only / Private (maps to `Visibility` tinyint; required on create with no database default so omission fails validation rather than publishing as Public).
 5. **Tags**
    - Multi-select from predetermined system tags plus typeahead to add custom tags (multiple allowed).
 6. **Media (optional)**
@@ -567,7 +567,7 @@ This section is the product contract for create/search flows on web and mobile.
 | Resource | Change |
 |---|---|
 | `azurerm_service_plan` | Upgrade from B1 to P1v3 or switch to Container Apps |
-| `azurerm_linux_web_app` | Repurpose for `ReMind.Api`; add a separate Static Web Apps/Storage static website/Front Door origin (or documented external host) for `ReMind.Web`; Key Vault references + VNet integration; restrict direct origin ingress so only Front Door reaches the public API origin |
+| `azurerm_linux_web_app` | Repurpose for `ReMind.Api`; add a separate Static Web Apps/Storage static website/Front Door origin (or documented external host) for `ReMind.Web`; Key Vault references + VNet integration; restrict direct origin ingress so only this deployment's Front Door reaches the public API origin by requiring the matching `X-Azure-FDID` header (deny unmatched/`AzureFrontDoor.Backend`-only traffic from other tenants' profiles) |
 | `azurerm_linux_function_app` | Keep for thumbnail generation, outbox dispatcher (if not in-process), and background jobs; managed identity + deterministic thumbnail paths + app settings / trigger bindings that point the workers at the provisioned media-work queue |
 | `azurerm_mssql_database` | Upgrade SKU from Basic to S0+ for spatial index performance |
 | `azurerm_mssql_server` | Disable public network access when the private endpoint is live |
@@ -605,7 +605,7 @@ This section is the product contract for create/search flows on web and mobile.
 - **Consent**: `UserConsents` (or equivalent) stores `UserId`, `Purpose` (`LocationGps`), `PolicyVersion`, `Granted`, `RecordedUtc`, `ClientUtc`, `RevokedUtc`. GPS-assisted create/search requires a non-revoked grant for the current policy version, and the server enforces that rule both when minting short-lived `gpsFixId` handles and again whenever one is redeemed (client prompts alone are not sufficient). Map-pin coordinates remain personal data covered by the privacy policy and retention/erasure flows.
 - **GPS fix retention**: `GpsFixes` are transient personal-location records; each handle expires quickly, a scheduled janitor purges expired rows on a short cadence, and the erasure workflow deletes any remaining fixes immediately.
 - Data retention policy: auto-delete posts after N years (configurable)
-- Right to erasure: `POST /api/users/me/erasure-requests` starts an asynchronous, retryable cleanup workflow recorded in `UserErasureRequests` that stores an opaque status receipt hash plus the request's ownership on a non-authenticating tombstone subject so status remains readable through completion even after the original `Users` row is scrubbed; the workflow (1) first marks the user/media as deleting (lease/version or equivalent) and stops issuing new signed media URLs while relying on short token TTLs for any already-issued URLs, (2) tombstones/cancels queued or yet-to-be-published media work and drains or fences in-flight dispatchers/workers so they must observe the deleting lease/version before publishing messages or writing thumbnails (a pre-write re-read alone is not sufficient), (3) deletes blobs/thumbnails and purges Front Door cache entries (with account-wide user-delegation-key revocation reserved for exceptional blast-radius events), then performs a final blob sweep after the drain to catch any race-created objects, (4) deletes or anonymizes dependent SQL rows in FK-safe order—`GpsFixes`, `UserConsents`, `Follows`, `Reactions`, `Reports`, `Comments`, custom-tag ownership/unused custom tags, the user’s `Media`/`DataPoints`, corresponding `OutboxMessages`, retained `UserExportRequests` audit rows, then empty or ownership-reassigned `DataPointChains` / retained `Tags` moved to the non-authenticating tombstone user row—and only then (5) deletes or scrubs the original `Users` row and records erasure complete; `GET /api/users/me/erasure-requests/{id}` (authenticated caller plus the receipt under the tombstone/receipt ownership rules, never via JIT profile recreation) reports auditable completion status and the durable job state
+- Right to erasure: `POST /api/users/me/erasure-requests` starts an asynchronous, retryable cleanup workflow recorded in `UserErasureRequests`, returns a one-time opaque status receipt in the response body (shown once; client must store it out-of-band—never embed it in URLs or logs), and persists only a non-reversible hash of that receipt plus the request's ownership on a non-authenticating tombstone subject so status remains readable through completion even after the original `Users` row is scrubbed; the workflow (1) first marks the user/media as deleting (lease/version or equivalent) and stops issuing new signed media URLs while relying on short token TTLs for any already-issued URLs, (2) tombstones/cancels queued or yet-to-be-published media work and drains or fences in-flight dispatchers/workers so they must observe the deleting lease/version before publishing messages or writing thumbnails (a pre-write re-read alone is not sufficient), (3) deletes blobs/thumbnails and purges Front Door cache entries (with account-wide user-delegation-key revocation reserved for exceptional blast-radius events), then performs a final blob sweep after the drain to catch any race-created objects, (4) deletes or anonymizes dependent SQL rows in FK-safe order—`GpsFixes`, `UserConsents`, `Follows`, `Reactions`, `Reports`, `Comments`, custom-tag ownership/unused custom tags, the user’s `Media`/`DataPoints`, corresponding `OutboxMessages`, retained `UserExportRequests` audit rows, then empty or ownership-reassigned `DataPointChains` / retained `Tags` moved to the non-authenticating tombstone user row—and only then (5) deletes or scrubs the original `Users` row and records erasure complete; `GET /api/users/me/erasure-requests/{id}` requires the opaque receipt via a non-URL channel (header such as `X-Erasure-Receipt` or equivalent body field)—never authorize by path/request id alone—and (authenticated caller plus receipt/tombstone ownership, never via JIT profile recreation) reports auditable completion status and the durable job state
 - Data export: `POST /api/users/me/export-requests` starts a full export job recorded in `UserExportRequests`, persists only the minimum audit metadata plus an opaque download receipt hash, stamps each generated archive with `DownloadExpiresUtc`, serves it only through an authenticated short-lived read URL while that receipt is valid, and has the janitor delete the export blob at expiry while retaining/anonymizing only the audit row; `GET /api/users/me/export-requests/{id}` returns the durable job state plus the authenticated download when ready
 
 ### Application Security
@@ -622,7 +622,7 @@ This section is the product contract for create/search flows on web and mobile.
 - SQL Server public network access disabled in production; provision a VNet, private endpoint, private DNS zone, **VNet link**, **DNS zone group**, and API/App Service/Container Apps VNet integration so the API can resolve and reach SQL
 - Blob uploads remain direct-from-client, so the upload endpoint must stay publicly reachable; rely on anonymous-access disabled, strict CORS, short-lived create-only SAS, and per-blob scoping instead of a private-only Blob endpoint for that path
 - For environments that require public access, use narrow explicit IP firewall rules and do not enable “Allow Azure services”
-- Front Door WAF rules (OWASP top 10) protect both the API and media hostnames, and the API origin rejects direct public ingress that does not arrive from Front Door
+- Front Door WAF rules (OWASP top 10) protect both the API and media hostnames, and the API origin rejects direct public ingress that does not arrive from this deployment's Front Door: allow only when `X-Azure-FDID` matches the provisioned profile id (do not rely on the `AzureFrontDoor.Backend` service tag alone, which would still permit another tenant's Front Door to reach the origin)
 
 ## 12. Implementation Phases
 
@@ -646,7 +646,7 @@ This section is the product contract for create/search flows on web and mobile.
 ### Phase 3: Media and user lifecycle
 - Blob Storage media upload pipeline with transactional outbox and idempotent thumbnails
 - Minimal admin/user-management support for Phase 3 validation: admin role assignment plus the moderation queue/approve/reject surfaces and owner/admin pending-media preview paths
-- Admin moderation queue + approve/reject transitions so Phase 3 uploads can move from `PendingModeration` to `Ready` or `Rejected`
+- Admin moderation queue + approve/reject transitions so Phase 3 uploads can move from `PendingModeration` to `Ready` or `Rejected`, and operators can also reject `Quarantined` holds
 - Keep media non-public until moderation approval exists; owner/admin preview paths may exist, but normal read APIs expose only `Ready` media
 - User data export + erasure request/status flows with background cleanup workers
 
