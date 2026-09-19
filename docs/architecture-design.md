@@ -255,7 +255,7 @@ var nearby = await db.DataPoints
         DataPoint = x.DataPoint,
         DistanceMeters = x.Distance
     })
-    .ToListAsync();
+    .ToListAsync(cancellationToken);
 
 // nextCursor = nearby.Count == 0
 //     ? null
@@ -430,9 +430,10 @@ Client → API (request upload URL)
        → API confirms the caller owns the target data point, creates or refreshes a PendingUpload media row
         with bounded expiry/retention plus canonical blob/thumbnail paths, then uses its managed identity to obtain a user-delegation key
         and mint a short-lived, create-only Blob SAS for that server-owned uploadId/blob key
-       → Client uploads directly to Blob Storage
-       → Client confirms upload → API validates the blob exists, was created with the canonical blob key, and matches expected size/hash/signature,
-        then in one SQL transaction updates the existing media row to Quarantined/Processing/PendingModeration as appropriate
+       → Client uploads directly to Blob Storage at a SAS-writable staging key
+       → Client confirms upload → API validates the staging blob exists and matches expected ETag/size/hash/signature,
+        then seals that exact validated version by conditionally copying the validated ETag to the server-write-only canonical blob key that
+        workers and read URLs use, and in one SQL transaction updates the existing media row to Quarantined/Processing/PendingModeration as appropriate
         and, only on the first `PendingUpload` → `Processing` / `PendingModeration` transition, inserts exactly one transactional outbox row for successful thumbnail/moderation work keyed by `UploadId` + work type
        → Retrying outbox dispatcher publishes the queue message (at-least-once) until acknowledged
        → Expired `PendingUpload` rows/blobs and bounded-retention `Rejected` artifacts are removed by a janitor that deletes both blob objects and media metadata
@@ -445,14 +446,14 @@ Client → API (request upload URL)
 
 ### Decisions
 
-- **Container structure**: originals `media/{userId}/{dataPointId}/{uploadId}/{fileName}` and thumbnails `media/{userId}/{dataPointId}/thumbnails/{uploadId}.jpg` (canonical paths derived from `UploadId`, not random names)
+- **Container structure**: SAS-writable staging originals `media/{userId}/{dataPointId}/staging/{uploadId}/{fileName}`, sealed canonical originals `media/{userId}/{dataPointId}/{uploadId}/{fileName}`, and thumbnails `media/{userId}/{dataPointId}/thumbnails/{uploadId}.jpg` (canonical paths derived from `UploadId`, not random names)
 - **Allowed types**: JPEG, PNG, WebP, MP4, MOV (validate blob signatures/content server-side, not only client-supplied MIME + extension, before publishing)
 - **Max file size**: 50 MB photos, 500 MB videos
 - **Upload quota enforcement**: Blob SAS cannot hard-cap object size, so before minting a SAS the API reserves bytes against a bounded per-user pending-upload quota and refuses new reservations once that quota is exhausted; completion rejects oversize blobs, and a short-cadence janitor deletes expired or oversize pending blobs/rows to bound residual storage/bandwidth cost
-- **Upload identity**: the initial upload call is author-only, issues the `UploadId`, stores the canonical blob key/expiry on the pending reservation, and completion is idempotent on that `UploadId`; terminal `Ready`/`Rejected` states are no-ops on retry, duplicate completion attempts must not enqueue duplicate work, expired pending uploads are reaped so abandoned blobs do not accumulate, and rejected blobs/metadata are retained only for a bounded audit window before janitor cleanup
+- **Upload identity**: the initial upload call is author-only, issues the `UploadId`, stores both the SAS-writable staging blob key and sealed canonical blob key/expiry on the pending reservation, and completion is idempotent on that `UploadId`; terminal `Ready`/`Rejected` states are no-ops on retry, duplicate completion attempts must not enqueue duplicate work, expired pending uploads are reaped so abandoned blobs do not accumulate, and rejected blobs/metadata are retained only for a bounded audit window before janitor cleanup
 - **Media outbox**: record thumbnail/moderation work in the same SQL transaction as the media row; a retrying dispatcher publishes to the queue so a crash between commit and enqueue cannot leave media permanently unprocessed, and a unique outbox deduplication key (`UploadId` + work type) prevents duplicate work rows
 - **Thumbnail worker**: queue delivery is at-least-once, so thumbnail blob paths must be deterministic (`media/{userId}/{dataPointId}/thumbnails/{uploadId}.jpg`) across the producer, worker, and signed-read URL builder; if the thumbnail already exists, treat that as success after verifying/upserting metadata, otherwise create it and then upsert metadata without duplicate side effects
-- **Blob SAS**: mint user-delegation SAS tokens with the API managed identity (no retained storage account keys); uploads are constrained to a single canonical blob path with create + write permissions so chunked `Put Block` / `Put Block List` uploads work, the initial create must use `If-None-Match: *`, and completion validates the reserved blob's ETag/size/hash before any processing or publish step; reserve Key Vault for secrets that cannot use identity-based access
+- **Blob SAS**: mint user-delegation SAS tokens with the API managed identity (no retained storage account keys); uploads are constrained to a single staging blob path with create + write permissions so chunked `Put Block` / `Put Block List` uploads work, the initial create must use `If-None-Match: *`, and completion validates the staging blob's ETag/size/hash then conditionally seals that exact validated ETag by copying it to the server-write-only canonical blob key before any processing or publish step; workers/read URLs never use the staging object, and Key Vault remains only for secrets that cannot use identity-based access
 - **Upload networking**: because web/mobile clients upload directly, the Blob service endpoint must remain publicly reachable for the upload container, but anonymous blob access stays disabled and Blob service CORS is configured in IaC for each allowed SPA origin plus the required `PUT`/preflight headers/methods—never wildcard origins—while SAS scope/TTL still restrict access to the intended blob path
 - **CDN**: Azure Front Door Premium (`azurerm_cdn_frontdoor_*`) for media delivery; the API issues short-lived, visibility-checked read URLs whose query string carries a blob-read SAS for the single canonical object, Front Door forwards that query string to Blob Storage over the selected origin route, and cache TTL never exceeds the SAS expiry so stale authorized objects are not served after revocation
 - **Moderation**: Azure Content Safety or manual review queue for uploaded media while Status remains `PendingModeration` / non-Ready; admin approval records moderation state, and a finalizer performs the single idempotent transition to `Ready` only after `ModerationApprovedUtc` and `ThumbnailReadyUtc` are both present
