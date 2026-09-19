@@ -46,8 +46,18 @@ resolve_repo() {
 
 REPO="$(resolve_repo)"
 
-echo "Loading existing labels for idempotency..."
-mapfile -t EXISTING_LABELS < <(gh label list --repo "${REPO}" --limit 200 --json name --jq '.[].name')
+echo "Loading existing labels..."
+existing_labels="$(
+  gh api \
+    --paginate \
+    -H "Accept: application/vnd.github+json" \
+    "/repos/${REPO}/labels?per_page=100" \
+    --jq '.[].name'
+)"
+EXISTING_LABELS=()
+if [[ -n "${existing_labels}" ]]; then
+  mapfile -t EXISTING_LABELS <<<"${existing_labels}"
+fi
 
 label_exists() {
   local needle="$1"
