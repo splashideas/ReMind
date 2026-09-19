@@ -30,7 +30,7 @@ This document is the **implementation contract** for the redesign: requirements 
 | Aspect | Current | Target |
 |---|---|---|
 | Frontend | ASP.NET Core Razor Pages (`ReMind.Frontend`) | React SPA + React Native mobile app |
-| API | Azure Functions with function-key auth | ASP.NET Core Web API on App Service / Container Apps with JWT |
+| API | Azure Functions with function-key auth | ASP.NET Core Web API on App Service (P1v3) with JWT |
 | Database | `dbo.DataPoints` with `Location NVARCHAR(200)` | Azure SQL with `GEOGRAPHY` + spatial index, chains, tags |
 | Data Access | Raw `SqlConnection` + inline SQL | EF Core + `Microsoft.EntityFrameworkCore.SqlServer.NetTopologySuite` |
 | Auth | Function keys | Microsoft Entra External ID (JWT bearer tokens) |
@@ -102,6 +102,9 @@ CREATE TABLE dbo.AvatarUploads (
     UploadExpiresUtc      DATETIME2(7) NOT NULL,
     CreatedUtc            DATETIME2(7) NOT NULL DEFAULT SYSUTCDATETIME(),
     CompletedUtc          DATETIME2(7) NULL,
+    MalwareScanVerdict    TINYINT NULL, -- 0=Clean 1=Malicious 2=Error/Timeout
+    MalwareScannedUtc     DATETIME2(7) NULL,
+    QuarantineReviewByUtc DATETIME2(7) NULL,
     RowVersion            ROWVERSION NOT NULL, -- concurrency token so replace cannot clobber an in-flight reservation silently
     CONSTRAINT FK_AvatarUploads_Users FOREIGN KEY (OwnerUserId)
         REFERENCES dbo.Users (UserId)
@@ -212,12 +215,18 @@ CREATE TABLE dbo.GpsFixes (
 
 CREATE INDEX IX_GpsFixes_Expires ON dbo.GpsFixes (ExpiresUtc);
 
--- SHA-256 (or stronger) of Issuer || 0x00 || ExternalSubject; retained after Users scrub so the same IdP subject cannot JIT-reprovision and undo erasure
+-- Versioned HMAC-SHA-256 of Issuer || 0x00 || ExternalSubject using SubjectPseudonymKey[v] from Key Vault (never stored in SQL);
+-- retained after Users scrub so the same IdP subject cannot JIT-reprovision and undo erasure. Plain SHA-256 is not sufficient:
+-- enumerable provider subjects would allow offline dictionary attacks after a DB leak.
 CREATE TABLE dbo.ErasedSubjectHashes (
-    SubjectHash   BINARY(32) PRIMARY KEY,
+    SubjectHash   BINARY(32) PRIMARY KEY, -- HMAC-SHA-256 output for KeyVersion
+    KeyVersion    INT NOT NULL,           -- version of SubjectPseudonymKey used to compute SubjectHash
     ErasedUtc     DATETIME2(7) NOT NULL DEFAULT SYSUTCDATETIME(),
     ErasureRequestId UNIQUEIDENTIFIER NOT NULL
 );
+
+CREATE INDEX IX_ErasedSubjectHashes_KeyVersion
+ON dbo.ErasedSubjectHashes (KeyVersion);
 
 CREATE TABLE dbo.UserErasureRequests (
     RequestId          UNIQUEIDENTIFIER PRIMARY KEY,
@@ -287,6 +296,11 @@ CREATE TABLE dbo.OutboxMessages (
     CONSTRAINT UQ_OutboxMessages_DedupKey UNIQUE (DedupKey)
 );
 
+CREATE INDEX IX_OutboxMessages_Unprocessed
+ON dbo.OutboxMessages (CreatedUtc, OutboxId)
+INCLUDE (Type, DedupKey, Attempts)
+WHERE ProcessedUtc IS NULL;
+
 CREATE TABLE dbo.Follows (
     FollowerId   UNIQUEIDENTIFIER NOT NULL,
     FolloweeId   UNIQUEIDENTIFIER NOT NULL,
@@ -342,14 +356,14 @@ CREATE TABLE dbo.Reports (
 
 ### Supporting table notes
 
-- **Users**: profile info, persisted external identity pair (`Issuer`, `ExternalSubject`) mapped from the validated token (`iss` + `oid`, or another explicitly linked provider subject when `oid` is unavailable), display name, server-owned `AvatarBlobPath` only (no single `AvatarUploadId` pointer on the user row), atomic `PendingReservedBytes` quota counter, bio; avatars are never written from a client-supplied path—only the caller-scoped avatar upload/complete flow may set them after validation. **JIT provisioning** must refuse when `SHA256(Issuer || 0x00 || ExternalSubject)` exists in `ErasedSubjectHashes` (HTTP 403 with a stable “account closed” code)—erasure is not complete if the same IdP subject can immediately recreate a profile. User erasure stays asynchronous and only deletes or scrubs the `Users` row after dependent SQL rows/blob artifacts (including avatar staging/canonical objects) are removed or reassigned in order (consents, follows, reactions, reports, media/data points/avatar uploads, comments on deleted data points, then any retained `DataPointChains.CreatedByUserId` / `Tags.CreatedByUserId` references reassigned to a single well-known non-authenticating system tombstone user row provisioned at deploy time—not a shared deleted end-user account). Comments that survive because their parent data point still remains visible are reassigned to that same system tombstone user before the live user row is removed.
-- **AvatarUploads**: dedicated reservation entity per avatar init/replace (`UploadId`, `OwnerUserId`, `ClientRequestId`, `Status`, `ReservedBytes` = photo type max, `RequestedSizeBytes`, `StagingBlobPath`, `CanonicalBlobPath`, `UploadExpiresUtc`, `RowVersion`). Concurrent replacements insert or refresh distinct rows under the unique (`OwnerUserId`, `ClientRequestId`) key and optimistic concurrency; overwriting one live pointer is forbidden so the janitor can always release the correct `ReservedBytes` for each charged reservation. At most one non-terminal pending reservation is active per user, enforced by serializing init/replace per owner in one transaction (lock the `Users` row, cancel/release prior pending avatar reservations, then debit/insert or refresh the replacement). Avatars require clean malware verdict before `Users.AvatarBlobPath` is set; human content-moderation queue is **optional** for avatars (default: auto-ready after clean malware + signature validation) but data-point media still requires moderation approval before `Ready`.
+- **Users**: profile info, persisted external identity pair (`Issuer`, `ExternalSubject`) mapped from the validated token (`iss` + `oid`, or another explicitly linked provider subject when `oid` is unavailable), display name, server-owned `AvatarBlobPath` only (no single `AvatarUploadId` pointer on the user row), atomic `PendingReservedBytes` quota counter, bio; avatars are never written from a client-supplied path—only the caller-scoped avatar upload/complete flow may set them after validation. **JIT provisioning** must refuse when a versioned `HMAC-SHA-256(SubjectPseudonymKey[v], Issuer || 0x00 || ExternalSubject)` exists in `ErasedSubjectHashes` for any active key version `v` (HTTP 403 with a stable “account closed” code)—erasure is not complete if the same IdP subject can immediately recreate a profile. User erasure stays asynchronous and only deletes or scrubs the `Users` row after dependent SQL rows/blob artifacts (including avatar staging/canonical objects) are removed or reassigned in order (consents, follows, reactions, reports, media/data points/avatar uploads, comments on deleted data points, then any retained `DataPointChains.CreatedByUserId` / `Tags.CreatedByUserId` references reassigned to a single well-known non-authenticating system tombstone user row provisioned at deploy time—not a shared deleted end-user account). Comments that survive because their parent data point still remains visible are reassigned to that same system tombstone user before the live user row is removed.
+- **AvatarUploads**: dedicated reservation entity per avatar init/replace (`UploadId`, `OwnerUserId`, `ClientRequestId`, `Status`, `ReservedBytes` = photo type max, `RequestedSizeBytes`, `StagingBlobPath`, `CanonicalBlobPath`, `UploadExpiresUtc`, `MalwareScanVerdict`, `MalwareScannedUtc`, `QuarantineReviewByUtc`, `RowVersion`). Concurrent replacements insert or refresh distinct rows under the unique (`OwnerUserId`, `ClientRequestId`) key and optimistic concurrency; overwriting one live pointer is forbidden so the janitor can always release the correct `ReservedBytes` for each charged reservation. At most one non-terminal pending reservation is active per user, enforced by serializing init/replace per owner in one transaction (lock the `Users` row, cancel/release prior pending avatar reservations, then debit/insert or refresh the replacement). Avatars require clean malware verdict before `Users.AvatarBlobPath` is set; the scan worker persists verdict/timeout state on this row (same contract as `Media`) so readiness and quarantine-hold expiry survive worker restarts; human content-moderation queue is **optional** for avatars (default: auto-ready after clean malware + signature validation) but data-point media still requires moderation approval before `Ready`.
 - **UserConsents** / **GpsFixes**: `UserConsents` is a single mutable current-state row per (`UserId`, `Purpose`, `PolicyVersion`) via the unique key above; `POST /api/users/me/consents` upserts that row and updates `Granted` / `RecordedUtc` / `RevokedUtc` instead of appending a second competing row for the same tuple. GPS-assisted operations enforce the resulting non-revoked grant for the current policy version at mint **and** redeem; expired fixes are purged on the §8 cadence and always deleted during erasure.
-- **ErasedSubjectHashes**: purpose-limited, non-reversible identity blocklist retained after `Users` scrub so receipt-only status and anti-reprovisioning both remain implementable without keeping live PII or matching JWTs to a tombstone subject.
+- **ErasedSubjectHashes**: purpose-limited identity blocklist retained after `Users` scrub so receipt-only status and anti-reprovisioning both remain implementable without keeping live PII or matching JWTs to a tombstone subject. Hashes are **keyed HMAC-SHA-256** outputs (`SubjectPseudonymKey[v]` from Key Vault, never in the database); store `KeyVersion` with each row. On rotation, mint with the current version and, for JIT lookup, evaluate active prior versions still within the rotation retention window so older blocklist rows remain effective without rehashing plaintext subjects (which are no longer available after scrub).
 - **DataPointChains**: logical timeline grouping; membership is via `DataPoints.ChainId`. Empty chains **are** supported: only `CreatedByUserId` may add the first node without a visible-node proximity match; later nodes use normal association rules.
 - **Tags** / **DataPointTags**: many-to-many labels; `IsSystem = 1` rows are the predetermined catalog (seeded), custom tags are user-created with unique normalized names.
 - **Media**: column contract as in DDL. `ReservedBytes` is the **per-type maximum** for abuse containment; client `requestedSizeBytes` is expected size only; concurrency-safe total lives on `Users.PendingReservedBytes`. A **hard** byte cap requires the size-enforcing upload proxy path; retained direct-to-Blob SAS for large uploads is documented only as bounded cleanup with sub-minute uncommitted-block inspection plus committed-oversize cleanup (§6), not as a strict pre-storage quota guarantee. Only an idempotent finalization step may promote data-point media to `Ready` after clean malware + thumbnail success + moderation approval.
-- **OutboxMessages**: transactional outbox with unique `DedupKey` per upload/work type.
+- **OutboxMessages**: transactional outbox with unique `DedupKey` per upload/work type. The dispatcher polls unprocessed rows via filtered index `IX_OutboxMessages_Unprocessed` (`ProcessedUtc IS NULL`, ordered by `CreatedUtc`, `OutboxId`).
 - **UserExportRequests** / **UserErasureRequests**: as in DDL. Exports: authenticated owner + download receipt. Erasure status: **receipt-only** against `StatusReceiptHash` (§12)—never JWT/`UserId` after scrub.
 - **Comments**: `ParentCommentId` is a single-column FK with `ON DELETE SET NULL`; writes enforce same-`DataPointId` as parent transactionally; erased authors are anonymized/tombstoned so replies remain.
 - **Reactions**: one current reaction per (`DataPointId`, `UserId`); new value replaces prior.
@@ -421,8 +435,8 @@ Opaque pagination cursors are produced and verified with ASP.NET Data Protection
 Never accept `userId` from the client request body or query string for authorization. Resolve the internal `Users.UserId` server-side from the validated JWT (`iss` + `oid` → the stable user identity key, or another explicitly linked provider key when `oid` is unavailable).
 
 **JIT profile creation** (first authenticated request):
-1. Compute `subjectHash = SHA256(UTF8(Issuer) || 0x00 || UTF8(ExternalSubject))`.
-2. If `ErasedSubjectHashes` contains `subjectHash`, **do not** create a profile—return 403 `account-closed` (stable code). Erasure must not be reversible by signing in again with the same IdP subject.
+1. Load active `SubjectPseudonymKey` versions from Key Vault (current version plus any prior versions still in the rotation retention window). For each active version `v`, compute `subjectHash[v] = HMAC-SHA-256(SubjectPseudonymKey[v], UTF8(Issuer) || 0x00 || UTF8(ExternalSubject))`.
+2. If `ErasedSubjectHashes` contains any `subjectHash[v]` (match on `SubjectHash`, optionally constrained by that row's `KeyVersion`), **do not** create a profile—return 403 `account-closed` (stable code). Erasure must not be reversible by signing in again with the same IdP subject. Do **not** use plain `SHA256(Issuer || 0x00 || ExternalSubject)`—provider subjects can be enumerable, so an unkeyed digest is only pseudonymous and is offline-attackable after a database leak.
 3. Otherwise create the `Users` row as today.
 
 **Erasure-status polls** must not provision a profile and must not require a live `Users` row. `GET /api/users/me/erasure-requests/{id}` (or the dedicated status route in §5) is **receipt-only**: authorize solely by constant-time compare of `SHA256(receipt)` to `UserErasureRequests.StatusReceiptHash` for that id. The receipt is a high-entropy bearer secret (§8), not proof of JWT ownership against a tombstone subject. Exempt this endpoint from the authenticated fallback policy (`AllowAnonymous` + receipt required) so status works after scrub even when the client still holds a JWT for a deleted profile; if a JWT is present it must **not** drive authorization or JIT. All visibility, ownership, and follow-graph checks use the server-resolved ID only when a live, non-closed profile exists.
@@ -850,12 +864,12 @@ Unless an environment override is documented in app configuration, implementatio
 | `azurerm_role_assignment` on the media storage account | Grant `ReMind.Api` least-privilege SAS issuance roles (`Storage Blob Delegator` plus blob data role needed for existence/metadata checks) and grant the thumbnail worker blob read/write rights |
 | `azurerm_cdn_frontdoor_profile` + endpoint/origin-group/origin/route (Premium tier) | Front Door entry for both media delivery and the public `ReMind.Api` hostname, with the API origin group probing anonymous `GET /healthz/live` and SAS-protected media routes configured without caching (or, if caching is later enabled for signed media, the cache key must vary on the full SAS query string per §6) |
 | `azurerm_cdn_frontdoor_firewall_policy` + `azurerm_cdn_frontdoor_security_policy` | Front Door WAF rules plus association of that WAF policy to the API and media routes/domains |
-| `azurerm_key_vault` | Secrets that cannot use identity-based access (e.g. Azure Maps key if required; not storage account keys — Blob SAS uses user-delegation via managed identity) |
+| `azurerm_key_vault` | Secrets that cannot use identity-based access (e.g. Azure Maps key if required; versioned `SubjectPseudonymKey` material for `ErasedSubjectHashes` HMAC; not storage account keys — Blob SAS uses user-delegation via managed identity) |
 | `azurerm_application_insights` | Monitoring and diagnostics |
 | `azurerm_log_analytics_workspace` | Centralized logging |
 | `azurerm_virtual_network` + subnets | Private network boundary for SQL private endpoint and app integration |
 | `azurerm_private_endpoint` + `azurerm_private_dns_zone` + **zone VNet link** + **private DNS zone group** on the endpoint | Private SQL connectivity and name resolution from the integrated VNet |
-| `azurerm_app_service_virtual_network_swift_connection` (or Container Apps VNet integration) | Allow `ReMind.Api` (and thumbnail Function if applicable) to reach SQL over the private endpoint |
+| `azurerm_app_service_virtual_network_swift_connection` | Allow `ReMind.Api` (and thumbnail Function if applicable) to reach SQL over the private endpoint |
 | `azurerm_user_assigned_identity` (or system-assigned) + KV access policies/RBAC + SQL AAD admin/user + Blob/Queue RBAC | Managed identities for API and Function; no plaintext `SqlConnectionString` in app settings; grant the API `Storage Blob Delegator` + least-privilege blob access to mint user-delegation SAS, and grant dispatcher/thumbnail workers only the blob/queue roles required to read source uploads, write thumbnails, ack queue work, and record scan outcomes |
 | Azure Maps account (or equivalent geocoder) | Server-side place/address/city/state/country search |
 
@@ -863,8 +877,8 @@ Unless an environment override is documented in app configuration, implementatio
 
 | Resource | Change |
 |---|---|
-| `azurerm_service_plan` | Upgrade from B1 to P1v3 or switch to Container Apps |
-| `azurerm_linux_web_app` | Repurpose for `ReMind.Api`; add a separate Static Web Apps/Storage static website/Front Door origin (or documented external host) for `ReMind.Web`; Key Vault references + VNet integration; expose an anonymous `/healthz/live` endpoint for Front Door origin probes; restrict direct origin ingress so only this deployment's Front Door reaches the public API origin by requiring the `AzureFrontDoor.Backend` source service tag **and** the matching `X-Azure-FDID` profile header together, then deny unmatched traffic (header-only checks are forgeable; service-tag-only checks still admit other tenants' Front Door profiles) |
+| `azurerm_service_plan` | Upgrade from B1 to **P1v3** (definitive production compute host for `ReMind.Api`; do not dual-track Container Apps in this design) |
+| `azurerm_linux_web_app` | Repurpose for `ReMind.Api` on the P1v3 plan; add a separate Static Web Apps/Storage static website/Front Door origin (or documented external host) for `ReMind.Web`; Key Vault references + VNet integration; expose an anonymous `/healthz/live` endpoint for Front Door origin probes; restrict direct origin ingress so only this deployment's Front Door reaches the public API origin by requiring the `AzureFrontDoor.Backend` source service tag **and** the matching `X-Azure-FDID` profile header together, then deny unmatched traffic (header-only checks are forgeable; service-tag-only checks still admit other tenants' Front Door profiles) |
 | `azurerm_linux_function_app` | Keep for thumbnail generation, outbox dispatcher (if not in-process), and background jobs; managed identity + deterministic thumbnail paths + app settings / trigger bindings that point the workers at the provisioned media-work queue |
 | `azurerm_mssql_database` | Upgrade SKU from Basic to S0+ for spatial index performance |
 | `azurerm_mssql_server` | Disable public network access when the private endpoint is live |
@@ -910,14 +924,14 @@ Unless an environment override is documented in app configuration, implementatio
   3. Tombstone/cancel queued media work; fence dispatchers/workers on the deleting lease before publish/thumbnail writes.
   4. Delete blobs/thumbnails; purge Front Door cache; final blob sweep after drain.
   5. FK-safe SQL cleanup: `GpsFixes`, `UserConsents`, `Follows`, `Reactions`, `Reports`, custom-tag ownership/unused custom tags, `Media`/`AvatarUploads`, comments on deleted data points, and the user's own `DataPoints`; comments that still survive on retained data points are reassigned to the deploy-time system tombstone user before deleting `Users`, related `OutboxMessages`, or retained ownership on `DataPointChains`/`Tags`.
-  6. **Before** scrubbing `Users`, insert `ErasedSubjectHashes` for `SHA256(Issuer || 0x00 || ExternalSubject)` keyed to the erasure request (idempotent).
+  6. **Before** scrubbing `Users`, insert `ErasedSubjectHashes` for `HMAC-SHA-256(SubjectPseudonymKey[current], Issuer || 0x00 || ExternalSubject)` with the current `KeyVersion`, keyed to the erasure request (idempotent).
   7. Scrub/delete the `Users` row (clear `UserErasureRequests.UserId` if needed); mark request Completed.
   8. **Status**: `GET /api/erasure-requests/{id}` is `AllowAnonymous` + receipt-only (constant-time hash compare), rate-limited per §8. JWT must not authorize, JIT, or recreate profiles. Never authorize by path id alone or tombstone-subject matching.
 - **Data export**: full portable archive of the caller’s profile, consents, data points (including locations/descriptions/tags/chain ids), Ready media metadata (not unbounded binary duplication beyond originals the user uploaded), comments, reactions, and follows. `POST` returns one-time download receipt; store only `DownloadReceiptHash`. Job-state GET requires authenticated owner; signed download URL only when `DownloadExpiresUtc` is valid **and** `X-Export-Download-Receipt` (or body) matches—never path id or ownership alone, never receipt in query strings. Janitor deletes the blob at expiry.
 
 ### Application Security
 
-- Secrets in Key Vault; managed identities for API and workers; Entra-only SQL preferred; break-glass SQL creds only outside Terraform state if unavoidable
+- Secrets in Key Vault (including versioned `SubjectPseudonymKey` for erased-subject HMACs, with documented rotation that retains prior versions for JIT blocklist lookup until no `ErasedSubjectHashes` rows reference them or the retention window ends); managed identities for API and workers; Entra-only SQL preferred; break-glass SQL creds only outside Terraform state if unavoidable
 - CORS allow-list of known SPA origins (no `*`); Blob CORS mirrors the same origins for upload methods/headers only
 - Input validation: HTML sanitize descriptions/comments, enforce the 4,000-char data-point description cap and existing comment bounds, validate uploads by signature, bound radii/page sizes (§8), normalize tags
 - SQL: EF Core parameterization; migration raw SQL only for controlled DDL such as `CREATE SPATIAL INDEX` (`suppressTransaction: true` + existence guard)
