@@ -86,32 +86,27 @@ while IFS= read -r label; do
 done < <(jq -c '.[]' "${ISSUE_DIR}/labels.json")
 
 echo "Loading existing open+closed issue titles for idempotency..."
-existing_titles="$(
-  gh api graphql \
-    --paginate \
-    -F owner="${REPO%/*}" \
-    -F name="${REPO#*/}" \
-    -f query='
-      query($owner: String!, $name: String!, $endCursor: String) {
-        repository(owner: $owner, name: $name) {
-          issues(first: 100, after: $endCursor, states: [OPEN, CLOSED], orderBy: { field: CREATED_AT, direction: ASC }) {
-            nodes {
-              title
-            }
-            pageInfo {
-              hasNextPage
-              endCursor
-            }
-          }
-        }
-      }
-    ' \
-    --jq '.data.repository.issues.nodes[].title'
-)"
 EXISTING_TITLES=()
-if [[ -n "${existing_titles}" ]]; then
-  mapfile -t EXISTING_TITLES <<<"${existing_titles}"
-fi
+page=1
+while :; do
+  issue_page="$(
+    gh api \
+      -H "Accept: application/vnd.github+json" \
+      "/repos/${REPO}/issues?state=all&per_page=100&page=${page}"
+  )"
+  issue_count="$(jq 'length' <<<"${issue_page}")"
+  if [[ "${issue_count}" -eq 0 ]]; then
+    break
+  fi
+
+  page_titles="$(jq -r '.[] | select(.pull_request | not) | .title' <<<"${issue_page}")"
+  if [[ -n "${page_titles}" ]]; then
+    mapfile -t current_titles <<<"${page_titles}"
+    EXISTING_TITLES+=("${current_titles[@]}")
+  fi
+
+  page=$((page + 1))
+done
 
 title_exists() {
   local needle="$1"
