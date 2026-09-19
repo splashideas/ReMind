@@ -87,11 +87,26 @@ done < <(jq -c '.[]' "${ISSUE_DIR}/labels.json")
 
 echo "Loading existing open+closed issue titles for idempotency..."
 existing_titles="$(
-  gh api \
+  gh api graphql \
     --paginate \
-    -H "Accept: application/vnd.github+json" \
-    "/repos/${REPO}/issues?state=all&sort=created&direction=asc&per_page=100" \
-    --jq '.[] | select(.pull_request | not) | .title'
+    -F owner="${REPO%/*}" \
+    -F name="${REPO#*/}" \
+    -f query='
+      query($owner: String!, $name: String!, $endCursor: String) {
+        repository(owner: $owner, name: $name) {
+          issues(first: 100, after: $endCursor, states: [OPEN, CLOSED], orderBy: { field: CREATED_AT, direction: ASC }) {
+            nodes {
+              title
+            }
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+          }
+        }
+      }
+    ' \
+    --jq '.data.repository.issues.nodes[].title'
 )"
 EXISTING_TITLES=()
 if [[ -n "${existing_titles}" ]]; then
