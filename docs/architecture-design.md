@@ -48,15 +48,18 @@ ReMind.sln
 
 ```sql
 CREATE TABLE dbo.Users (
-    UserId           UNIQUEIDENTIFIER PRIMARY KEY,
-    Issuer           NVARCHAR(200) NOT NULL,
-    ExternalSubject  NVARCHAR(200) NOT NULL,
-    DisplayName      NVARCHAR(200) NOT NULL,
-    AvatarBlobPath   NVARCHAR(400) NULL,
-    Bio              NVARCHAR(1000) NULL,
-    CreatedUtc       DATETIME2(7) NOT NULL DEFAULT SYSUTCDATETIME(),
-    DeletedUtc       DATETIME2(7) NULL,
-    CONSTRAINT UQ_Users_Issuer_ExternalSubject UNIQUE (Issuer, ExternalSubject)
+    UserId                UNIQUEIDENTIFIER PRIMARY KEY,
+    Issuer                NVARCHAR(200) NOT NULL,
+    ExternalSubject       NVARCHAR(200) NOT NULL,
+    DisplayName           NVARCHAR(200) NOT NULL,
+    AvatarBlobPath        NVARCHAR(400) NULL, -- server-set sealed path only; never accept client-supplied paths on profile update
+    AvatarUploadId        UNIQUEIDENTIFIER NULL, -- live pending/ready avatar reservation identity when set
+    PendingReservedBytes  BIGINT NOT NULL DEFAULT 0, -- atomic pending-upload quota counter (data-point media + avatar)
+    Bio                   NVARCHAR(1000) NULL,
+    CreatedUtc            DATETIME2(7) NOT NULL DEFAULT SYSUTCDATETIME(),
+    DeletedUtc            DATETIME2(7) NULL,
+    CONSTRAINT UQ_Users_Issuer_ExternalSubject UNIQUE (Issuer, ExternalSubject),
+    CONSTRAINT CK_Users_PendingReservedBytes_NonNegative CHECK (PendingReservedBytes >= 0)
 );
 
 CREATE TABLE dbo.DataPointChains (
@@ -131,12 +134,12 @@ CREATE TABLE dbo.DataPointTags (
 
 ### Supporting Tables
 
-- **Users**: profile info, persisted external identity pair (`Issuer`, `ExternalSubject`) mapped from the validated token (`iss` + `oid`, or another explicitly linked provider subject when `oid` is unavailable), display name, avatar blob path, bio; user erasure stays asynchronous and only deletes or scrubs the `Users` row after dependent SQL rows/blob artifacts are removed or reassigned in order (consents, follows, reactions, comments, reports, custom-tag ownership, media/data points, then any retained `DataPointChains.CreatedByUserId` / `Tags.CreatedByUserId` references reassigned to a non-authenticating tombstone user row such as `Deleted User`)
+- **Users**: profile info, persisted external identity pair (`Issuer`, `ExternalSubject`) mapped from the validated token (`iss` + `oid`, or another explicitly linked provider subject when `oid` is unavailable), display name, server-owned `AvatarBlobPath` / optional live `AvatarUploadId`, atomic `PendingReservedBytes` quota counter, bio; avatars are never written from a client-supplied path—only the caller-scoped avatar upload/complete flow may set them after validation; user erasure stays asynchronous and only deletes or scrubs the `Users` row after dependent SQL rows/blob artifacts (including avatar staging/canonical objects) are removed or reassigned in order (consents, follows, reactions, comments, reports, custom-tag ownership, media/data points/avatar uploads, then any retained `DataPointChains.CreatedByUserId` / `Tags.CreatedByUserId` references reassigned to a non-authenticating tombstone user row such as `Deleted User`)
 - **UserConsents**: auditable GPS/location consent grants and revocations (`Purpose`, `PolicyVersion`, `Granted`, timestamps) enforced server-side for GPS-assisted operations
 - **GpsFixes**: short-lived server-issued handles that bind a consent-validated GPS coordinate fix to the current user (`GpsFixId`, `UserId`, `Location`, `CapturedUtc`, `AccuracyMeters`, `ExpiresUtc`); create/search flows reference `gpsFixId` instead of trusting a client-supplied `"source": "Gps"` flag, expired rows are purged by a scheduled janitor on a short cadence, and any still-present fixes are deleted during user erasure
 - **DataPointChains**: logical timeline grouping related events at/near a place; membership is via `DataPoints.ChainId`
 - **Tags** / **DataPointTags**: many-to-many labels; `IsSystem = 1` rows are the predetermined catalog (seeded), custom tags are user-created with unique normalized names
-- **Media**: `MediaId`, `DataPointId`, `OwnerUserId`, `UploadId`, `ClientRequestId`, `BlobPath`, `ThumbnailPath`, `MediaType` (Photo/Video), `Status` (`PendingUpload` / `Quarantined` / `Processing` / `PendingModeration` / `Ready` / `Rejected`), `ReservedBytes` (atomically reserved expected size while the pending upload is live; released on completion, rejection, or expiry), `ModerationApprovedUtc`, `ThumbnailReadyUtc`, `MalwareScanVerdict` / `MalwareScannedUtc`, `UploadExpiresUtc`, `SortOrder`; unique constraints on `UploadId`, (`OwnerUserId`, `DataPointId`, `ClientRequestId`), and (`DataPointId`, `BlobPath`); issuing an upload URL creates or refreshes the caller-owned pending reservation for the parent data point, an expiry reaper deletes abandoned pending uploads/blobs and releases their `ReservedBytes`, malware-scan/moderation/thumbnail gates are recorded separately (thumbnail parsing and publication require a clean malware verdict; malicious → `Rejected`, failed/timed-out scan → non-Ready `Quarantined` hold), and only an idempotent finalization step may promote a row to `Ready` once all gates are satisfied
+- **Media**: `MediaId`, `DataPointId`, `OwnerUserId`, `UploadId`, `ClientRequestId`, `BlobPath`, `ThumbnailPath`, `MediaType` (Photo/Video), `Status` (`PendingUpload` / `Quarantined` / `Processing` / `PendingModeration` / `Ready` / `Rejected`), `ReservedBytes` (per-row expected size while the pending upload is live; the concurrency-safe total lives on `Users.PendingReservedBytes` and is debited/released with that row), `ModerationApprovedUtc`, `ThumbnailReadyUtc`, `MalwareScanVerdict` / `MalwareScannedUtc`, `UploadExpiresUtc`, `SortOrder`; unique constraints on `UploadId`, (`OwnerUserId`, `DataPointId`, `ClientRequestId`), and (`DataPointId`, `BlobPath`); issuing an upload URL creates or refreshes the caller-owned pending reservation for the parent data point while conditionally incrementing `Users.PendingReservedBytes`, an expiry reaper deletes abandoned pending uploads/blobs and decrements that counter, malware-scan/moderation/thumbnail gates are recorded separately (thumbnail parsing and publication require a clean malware verdict; malicious → `Rejected`, failed/timed-out scan → non-Ready `Quarantined` hold), and only an idempotent finalization step may promote a row to `Ready` once all gates are satisfied
 - **OutboxMessages**: transactional outbox rows written in the same SQL transaction as media state changes (`OutboxId`, `Type`, `DedupKey`, `Payload`, `CreatedUtc`, `ProcessedUtc`, `Attempts`) with a unique `DedupKey` per upload/work type so queue publication is durable, retryable, and idempotent
 - **UserExportRequests** / **UserErasureRequests**: durable per-user async-job records (`RequestId`, `UserId`, `Status`, `RequestedUtc`, `StartedUtc`, `CompletedUtc`, `FailureCode`, `AuditJson`, optional `DownloadBlobPath` for exports) that own the documented request/status endpoints and enforce caller-scoped reads, retries, and auditable completion
 - **Comments**: `CommentId`, `DataPointId`, `UserId`, `Text`, `CreatedUtc`, nullable `ParentCommentId` (threading); `ParentCommentId` is a single-column FK to `Comments.CommentId` with `ON DELETE SET NULL` so deleting a parent only clears the child's parent pointer (SQL Server would null every column of a composite parent FK, which cannot keep required `DataPointId`); writes and parent deletes enforce the same-`DataPointId` invariant transactionally (or with a trigger) and tombstone/anonymize the erased parent before any optional hard delete so other users' replies remain intact
@@ -276,7 +279,7 @@ Chain-candidate lookup for create uses the same visibility predicate and `Distan
 - **Selected approach (Option A)**: EF Core migrations are the schema source of truth.
 - No database has been created yet, so there is no existing `dbo.DataPoints` table or application data to migrate, backfill, or preserve.
 - Before deploying the database resources, remove the old create-if-missing SQL path and create the initial schema from the first EF Core migration/bundle.
-- Ensure the initial EF Core migration explicitly emits `CREATE SPATIAL INDEX IX_DataPoints_Location ...` because the `Location` mapping alone does not create the spatial index.
+- Ensure the initial EF Core migration explicitly emits `CREATE SPATIAL INDEX IX_DataPoints_Location ...` because the `Location` mapping alone does not create the spatial index. Emit that DDL with `migrationBuilder.Sql("""CREATE SPATIAL INDEX ...""", suppressTransaction: true)`: SQL Server rejects `CREATE SPATIAL INDEX` inside an explicit transaction, and EF Core migration SQL is transactional by default. Because `suppressTransaction: true` makes this step non-atomic with the rest of the migration, the statement must be retry-safe (e.g. create only when `IX_DataPoints_Location` is absent, or an equivalent existence guard) so a failed/partial apply can be re-run without leaving the migration permanently stuck.
 - If the schema design changes again before first deployment, update the initial migration and redeploy; no rollback/data-disposition process is required until persisted data exists.
 
 ## 4. Authentication & Authorization
@@ -349,15 +352,17 @@ POST   /api/chains/{chainId}/datapoints # Add a new data point into an existing 
 GET    /api/tags                        # List system tags + caller's recent custom tags (search q= optional)
 POST   /api/tags                        # Create custom tag (idempotent on NormalizedName)
 
-POST   /api/datapoints/{id}/media       # Author only: requires a client-generated idempotency key plus requestedSizeBytes (and media type); create/refresh the caller-owned PendingUpload row with ReservedBytes set to that requested size (or the per-type maximum when omitted is disallowed), expiry + canonical blob key, transactionally debit the per-user pending quota, and return the same UploadId/SAS/ReservedBytes reservation when that key is retried before expiry
-POST   /api/datapoints/{id}/media/complete # Validate the existing PendingUpload row/blob against ReservedBytes; failed validation transitions it to Quarantined/Rejected and releases the reservation, successful validation in one SQL transaction moves it to Processing/PendingModeration as appropriate, releases or converts the reserved quota to consumed bytes, writes one deduplicated OutboxMessages row, and lets the retrying dispatcher publish queue work
+POST   /api/datapoints/{id}/media       # Author only: requires a client-generated idempotency key plus requestedSizeBytes (and media type); create/refresh the caller-owned PendingUpload row with ReservedBytes set to that requested size (omission disallowed), expiry + canonical blob key, atomically debit Users.PendingReservedBytes via conditional counter update (not a SUM read), and return the same UploadId/SAS/ReservedBytes reservation without a second debit when that key is retried before expiry
+POST   /api/datapoints/{id}/media/complete # Validate the existing PendingUpload row/blob against ReservedBytes; failed validation transitions it to Quarantined/Rejected and decrements Users.PendingReservedBytes, successful validation in one SQL transaction moves it to Processing/PendingModeration as appropriate, releases or converts the reserved counter bytes, writes one deduplicated OutboxMessages row, and lets the retrying dispatcher publish queue work
 POST   /api/datapoints/{id}/comments    # Add comment (caller must be allowed to view the post)
 GET    /api/datapoints/{id}/comments    # List comments oldest-first; cursor = (createdUtc, commentId) and the seek predicate is > on that ascending tuple; pageSize default 50 max 100
 POST   /api/datapoints/{id}/reactions   # Create or replace the caller's single current reaction for the post (caller must be allowed to view it)
 DELETE /api/datapoints/{id}/reactions   # Remove caller's reaction
 
-GET    /api/users/{id}                  # Get user profile
-PUT    /api/users/me                    # Update own profile
+GET    /api/users/{id}                  # Get user profile (avatar returned as a short-lived signed read URL when AvatarBlobPath is set—never as a raw writable path)
+PUT    /api/users/me                    # Update own profile fields only (display name, bio); must not accept AvatarBlobPath or any client-supplied blob path
+POST   /api/users/me/avatar             # Caller only: init/replace avatar upload; requires client idempotency key + requestedSizeBytes (photo types only); creates/refreshes a caller-owned pending avatar reservation under avatars/{userId}/..., atomically debits Users.PendingReservedBytes, returns UploadId/SAS/ReservedBytes (same reservation on key retry)
+POST   /api/users/me/avatar/complete    # Validate the pending avatar blob, run the same malware/signature gates as media, seal to the canonical avatar path, set Users.AvatarBlobPath server-side, release/convert reserved bytes, delete prior avatar objects after the new path is live, and schedule erasure/janitor cleanup of abandoned replacements
 POST   /api/users/me/gps-fixes          # Bind a freshly captured device GPS fix to the authenticated user after verifying current consent; returns short-lived gpsFixId
 POST   /api/users/me/consents           # Record location/GPS consent (purpose, policyVersion, granted, client timestamp)
 GET    /api/users/me/consents           # Current consent state used to gate GPS-assisted create/search
@@ -430,18 +435,20 @@ GET /api/datapoints/nearby?lat=52.52&lng=13.405&radiusMeters=250&pageSize=25&cur
 ```
 Client → API (request upload URL with requestedSizeBytes + media type)
        → API confirms the caller owns the target data point, requires requestedSizeBytes within the per-type max, persists the caller-supplied
-        idempotency key and `ReservedBytes` on a PendingUpload media row while transactionally debiting the per-user pending-upload quota,
-        returns the existing unexpired reservation (same UploadId/SAS/ReservedBytes) when that key is retried, otherwise creates/refreshes the row
+        idempotency key and `ReservedBytes` on a PendingUpload media row while atomically debiting `Users.PendingReservedBytes` with a single conditional
+        counter update (`UPDATE ... SET PendingReservedBytes = PendingReservedBytes + @requested WHERE UserId = @caller AND PendingReservedBytes + @requested <= @quota`;
+        refuse when the update affects 0 rows)—do not rely on a `SUM(ReservedBytes)` read under default `READ COMMITTED` to enforce the cap—
+        returns the existing unexpired reservation (same UploadId/SAS/ReservedBytes) when that key is retried without a second debit, otherwise creates/refreshes the row
         with bounded expiry/retention plus canonical blob/thumbnail paths, then uses its managed identity to obtain a user-delegation key and mint a short-lived,
         create + write Blob SAS for that server-owned uploadId/blob key
        → Client uploads directly to Blob Storage at a SAS-writable staging key
        → Client confirms upload → API validates the staging blob exists and matches expected ETag/size/hash/signature and does not exceed `ReservedBytes`,
         then seals that exact validated version by conditionally copying the validated ETag to the server-write-only canonical blob key that
         workers and read URLs use, and in one SQL transaction updates the existing media row to Quarantined (manual-hold only with `QuarantineReviewByUtc`)
-        or Processing/PendingModeration/Rejected as appropriate, releases or converts the reserved quota bytes, 
+        or Processing/PendingModeration/Rejected as appropriate, decrements or converts `Users.PendingReservedBytes` for the released reservation,
         and, only on the first `PendingUpload` → `Processing` / `PendingModeration` transition, inserts exactly one transactional outbox row for successful malware-scan/thumbnail/moderation work keyed by `UploadId` + work type
        → Retrying outbox dispatcher publishes the queue message (at-least-once) until acknowledged
-       → Expired `PendingUpload` rows/blobs (releasing their `ReservedBytes`), expired `Quarantined` manual holds, and bounded-retention `Rejected` artifacts are removed by a janitor that deletes both blob objects and media metadata
+       → Expired `PendingUpload` rows/blobs (decrementing `Users.PendingReservedBytes` for their `ReservedBytes`), expired `Quarantined` manual holds, and bounded-retention `Rejected` artifacts are removed by a janitor that deletes both blob objects and media metadata
        → Queue worker obtains a clean malware-scan verdict before any ImageSharp/FFmpeg parse; malicious results reject the upload, while failed/timed-out scans keep the object non-Ready in `Quarantined` without parsing or serving it until a clean rescan or an operator reject via `POST /api/moderation/media/{mediaId}/reject`
        → Azure Function (queue trigger) generates thumbnail idempotently to the canonical path `media/{userId}/{dataPointId}/thumbnails/{uploadId}.jpg`, updates media thumbnail fields, and records `ThumbnailReadyUtc`
        → Media.Status becomes Ready only in a separate idempotent finalization transaction after validation + clean malware verdict + thumbnail success + moderation approval are all recorded; until then it remains non-public
@@ -455,8 +462,9 @@ Client → API (request upload URL with requestedSizeBytes + media type)
 - **Container structure**: SAS-writable staging originals `media/{userId}/{dataPointId}/staging/{uploadId}/{fileName}`, sealed canonical originals `media/{userId}/{dataPointId}/{uploadId}/{fileName}`, and thumbnails `media/{userId}/{dataPointId}/thumbnails/{uploadId}.jpg` (canonical paths derived from `UploadId`, not random names)
 - **Allowed types**: JPEG, PNG, WebP, MP4, MOV (validate blob signatures/content server-side, not only client-supplied MIME + extension, before publishing); a clean malware-scan verdict is required before ImageSharp/FFmpeg thumbnail parsing or any publication step—malicious findings reject the upload, and failed or timed-out scans leave the media in a non-Ready quarantine/hold until a clean rescan or explicit operator rejection, never parsing or serving the object meanwhile
 - **Max file size**: 50 MB photos, 500 MB videos
-- **Upload quota enforcement**: Blob SAS cannot hard-cap object size, so the upload init contract requires `requestedSizeBytes` (must be > 0 and ≤ the per-type maximum for the declared media type). Before minting a SAS the API transactionally persists that amount as `Media.ReservedBytes` on the pending row and debits a bounded per-user pending-upload quota (`SUM(ReservedBytes)` over live `PendingUpload` rows for the owner); it refuses new reservations once that quota would be exceeded. Completion rejects blobs larger than `ReservedBytes` (or the per-type max), releases or converts the reserved amount in the same transaction as the status transition, and a short-cadence janitor deletes expired or oversize pending blobs/rows while releasing their `ReservedBytes` so concurrent requests always account against durable reserved totals
+- **Upload quota enforcement**: Blob SAS cannot hard-cap object size, so the upload init contract requires `requestedSizeBytes` (must be > 0 and ≤ the per-type maximum for the declared media type). Before minting a SAS the API persists that amount as `Media.ReservedBytes` (or the avatar reservation equivalent) and **atomically** debits the per-user counter `Users.PendingReservedBytes` with one conditional update that only succeeds when `PendingReservedBytes + requestedSizeBytes <=` the configured pending-upload quota; a 0-row update is a hard refusal. Do not enforce the cap by reading `SUM(ReservedBytes)` under default `READ COMMITTED` (two concurrent inits can both observe capacity and over-reserve). Idempotent retries of the same live `ClientRequestId` return the existing reservation without a second counter debit. Completion rejects blobs larger than `ReservedBytes` (or the per-type max), releases or converts the reserved amount by decrementing `Users.PendingReservedBytes` in the same transaction as the status transition, and a short-cadence janitor deletes expired or oversize pending blobs/rows while decrementing the same counter so concurrent requests always account against the durable atomic total (row-level `ReservedBytes` remains an audit/detail field, not the concurrency boundary)
 - **Upload identity**: the initial upload call is author-only and requires a client-generated `ClientRequestId` idempotency key unique per caller + data point while the reservation is live plus `requestedSizeBytes`/media type; the API persists that key and `ReservedBytes` on the pending reservation, returns the same unexpired `UploadId`/SAS/`ReservedBytes` instead of creating a duplicate row or double-debiting quota when the key is retried, stores both the SAS-writable staging blob key and sealed canonical blob key/expiry on that reservation, and completion is idempotent on `UploadId`; terminal `Ready`/`Rejected` states are no-ops on retry, invalid validation outcomes transition directly to `Rejected` unless an operator explicitly places the upload in a time-bounded `Quarantined` manual hold, duplicate completion attempts must not enqueue duplicate work, expired pending uploads are reaped so abandoned blobs do not accumulate, and rejected/quarantined blobs/metadata are retained only for a bounded audit/review window before janitor cleanup
+- **Avatar uploads**: profile avatars use the same direct-to-Blob SAS, malware-scan, validation, quota-counter, and signed-read rules via `POST /api/users/me/avatar` + `POST /api/users/me/avatar/complete` (photo types only; paths `avatars/{userId}/staging/{uploadId}/...` and sealed `avatars/{userId}/{uploadId}/...`). `PUT /api/users/me` never accepts `AvatarBlobPath` or other client blob paths—only completion may set `Users.AvatarBlobPath` after the new object is Ready. Replacing an avatar seals the new object first, then deletes the previous canonical blob (and any abandoned pending reservation for that user). Profile reads expose a short-lived signed read URL derived from the server path; user erasure and the media janitor delete pending and canonical avatar objects along with other user blobs
 - **Media outbox**: record thumbnail/moderation work in the same SQL transaction as the media row; a retrying dispatcher publishes to the queue so a crash between commit and enqueue cannot leave media permanently unprocessed, and a unique outbox deduplication key (`UploadId` + work type) prevents duplicate work rows
 - **Thumbnail worker**: queue delivery is at-least-once, so thumbnail blob paths must be deterministic (`media/{userId}/{dataPointId}/thumbnails/{uploadId}.jpg`) across the producer, worker, and signed-read URL builder; the worker runs only after a clean malware-scan verdict and must refuse to parse or write when the user/media deleting lease/version is set; if the thumbnail already exists, treat that as success after verifying/upserting metadata, otherwise create it and then upsert metadata without duplicate side effects
 - **Blob SAS**: mint user-delegation SAS tokens with the API managed identity (no retained storage account keys); uploads are constrained to a single staging blob path with create + write permissions so chunked `Put Block` / `Put Block List` uploads work, the initial create must use `If-None-Match: *`, and completion validates the staging blob's ETag/size/hash then conditionally seals that exact validated ETag by copying it to the server-write-only canonical blob key before any processing or publish step; workers/read URLs never use the staging object, and Key Vault remains only for secrets that cannot use identity-based access
@@ -526,7 +534,7 @@ This section is the product contract for create/search flows on web and mobile.
 
 ### MVP Scope
 
-- User profiles (display name, avatar, bio)
+- User profiles (display name, avatar via caller-scoped upload/complete + signed reads, bio)
 - Follow/unfollow
 - Comments on data points
 - Reactions (like)
@@ -613,7 +621,7 @@ This section is the product contract for create/search flows on web and mobile.
 - All secrets in Key Vault; grant ReMind.Api and the thumbnail Function managed identities least-privilege access and use Key Vault references or managed-identity-based SQL connections instead of plaintext app settings. Prefer Entra-only SQL access; if a bootstrap/break-glass SQL admin credential is still required, provision and rotate it outside Terraform state as an explicit operational exception.
 - CORS restricted to known frontend origins
 - Input validation: sanitize HTML in descriptions, validate file uploads, bound radii/page sizes, normalize tags
-- SQL injection: EF Core parameterization for runtime/ad-hoc queries; allow migration-time raw SQL only for controlled schema operations such as `CREATE SPATIAL INDEX`
+- SQL injection: EF Core parameterization for runtime/ad-hoc queries; allow migration-time raw SQL only for controlled schema operations such as `CREATE SPATIAL INDEX` (emitted with `suppressTransaction: true` and an existence guard for safe retries)
 - Rate limiting on auth endpoints, place search, and media upload
 - Content Security Policy headers on the React SPA
 
