@@ -63,7 +63,7 @@ ReMind.sln
 - **Schema source of truth**: EF Core migrations in `ReMind.Data`. Retire `ReMind.Database` and the create-if-missing SQL path **before** the first database deployment (§3 Migration Strategy).
 - **API host**: `ReMind.Api` (ASP.NET Core) replaces `ReMind.Functions` as the public HTTP API; any remaining Functions are **workers only** (thumbnails, outbox dispatcher, janitors)—not a second public API surface.
 - **Web host**: `ReMind.Web` (React SPA) replaces `ReMind.Frontend` (Razor) as the web client. Keep Razor/`ReMind.Functions` HTTP triggers only until cutover, then remove them from deploy and CI.
-- **Mobile**: `ReMind.Mobile` (React Native) is in-repo from Pre-Phase 1; feature parity lands in Phase 5.
+- **Mobile**: `ReMind.Mobile` (React Native) is in-repo from Pre-Phase 1; feature parity lands in Phase 4.
 
 ## 2. Spatial Data Model
 
@@ -131,12 +131,12 @@ CREATE TABLE dbo.DataPoints (
     UserId          UNIQUEIDENTIFIER NOT NULL,
     ChainId         UNIQUEIDENTIFIER NULL,
     Title           NVARCHAR(200) NOT NULL,
-    Description     NVARCHAR(MAX) NOT NULL,
+    Description     NVARCHAR(4000) NOT NULL,
     EventDate       DATETIMEOFFSET NOT NULL, -- may be historical (past) or near-present
     Location        GEOGRAPHY NOT NULL,
     CreatedUtc      DATETIME2(7) NOT NULL DEFAULT SYSUTCDATETIME(),
     UpdatedUtc      DATETIME2(7) NULL,
-    Visibility      TINYINT NOT NULL,  -- 0=Public, 1=FollowersOnly, 2=Private; no DB default — API DTO/deserializer must also require presence on create
+    Visibility      TINYINT NOT NULL,  -- 0=Public, 1=FollowersOnly, 2=Private; no DB default — API DTO/deserializer must also require presence on create (for example, a required nullable enum so omitted JSON cannot bind to 0)
     IsDeleted       BIT NOT NULL DEFAULT 0,
     CONSTRAINT CK_DataPoints_Location_SRID CHECK (Location.STSrid = 4326),
     CONSTRAINT CK_DataPoints_Visibility CHECK (Visibility IN (0, 1, 2)),
@@ -195,6 +195,7 @@ CREATE TABLE dbo.UserConsents (
     RecordedUtc   DATETIME2(7) NOT NULL DEFAULT SYSUTCDATETIME(),
     ClientUtc     DATETIMEOFFSET NULL,
     RevokedUtc    DATETIME2(7) NULL,
+    CONSTRAINT UQ_UserConsents_User_Purpose_PolicyVersion UNIQUE (UserId, Purpose, PolicyVersion),
     CONSTRAINT FK_UserConsents_Users FOREIGN KEY (UserId) REFERENCES dbo.Users (UserId) ON DELETE NO ACTION
 );
 
@@ -341,13 +342,13 @@ CREATE TABLE dbo.Reports (
 
 ### Supporting table notes
 
-- **Users**: profile info, persisted external identity pair (`Issuer`, `ExternalSubject`) mapped from the validated token (`iss` + `oid`, or another explicitly linked provider subject when `oid` is unavailable), display name, server-owned `AvatarBlobPath` only (no single `AvatarUploadId` pointer on the user row), atomic `PendingReservedBytes` quota counter, bio; avatars are never written from a client-supplied path—only the caller-scoped avatar upload/complete flow may set them after validation. **JIT provisioning** must refuse when `SHA256(Issuer || 0x00 || ExternalSubject)` exists in `ErasedSubjectHashes` (HTTP 403 with a stable “account closed” code)—erasure is not complete if the same IdP subject can immediately recreate a profile. User erasure stays asynchronous and only deletes or scrubs the `Users` row after dependent SQL rows/blob artifacts (including avatar staging/canonical objects) are removed or reassigned in order (consents, follows, reactions, comments, reports, custom-tag ownership, media/data points/avatar uploads, then any retained `DataPointChains.CreatedByUserId` / `Tags.CreatedByUserId` references reassigned to a single well-known non-authenticating system tombstone user row provisioned at deploy time—not a shared deleted end-user account).
-- **AvatarUploads**: dedicated reservation entity per avatar init/replace (`UploadId`, `OwnerUserId`, `ClientRequestId`, `Status`, `ReservedBytes` = photo type max, `RequestedSizeBytes`, `StagingBlobPath`, `CanonicalBlobPath`, `UploadExpiresUtc`, `RowVersion`). Concurrent replacements insert or refresh distinct rows under the unique (`OwnerUserId`, `ClientRequestId`) key and optimistic concurrency; overwriting one live pointer is forbidden so the janitor can always release the correct `ReservedBytes` for each charged reservation. At most one non-terminal pending reservation is active per user (additional inits cancel/expire prior pending rows and release their counter bytes before debiting a new reservation). Avatars require clean malware verdict before `Users.AvatarBlobPath` is set; human content-moderation queue is **optional** for avatars (default: auto-ready after clean malware + signature validation) but data-point media still requires moderation approval before `Ready`.
-- **UserConsents** / **GpsFixes**: as in DDL; GPS-assisted operations enforce non-revoked grant for the current policy version at mint **and** redeem; expired fixes are purged on the §8 cadence and always deleted during erasure.
+- **Users**: profile info, persisted external identity pair (`Issuer`, `ExternalSubject`) mapped from the validated token (`iss` + `oid`, or another explicitly linked provider subject when `oid` is unavailable), display name, server-owned `AvatarBlobPath` only (no single `AvatarUploadId` pointer on the user row), atomic `PendingReservedBytes` quota counter, bio; avatars are never written from a client-supplied path—only the caller-scoped avatar upload/complete flow may set them after validation. **JIT provisioning** must refuse when `SHA256(Issuer || 0x00 || ExternalSubject)` exists in `ErasedSubjectHashes` (HTTP 403 with a stable “account closed” code)—erasure is not complete if the same IdP subject can immediately recreate a profile. User erasure stays asynchronous and only deletes or scrubs the `Users` row after dependent SQL rows/blob artifacts (including avatar staging/canonical objects) are removed or reassigned in order (consents, follows, reactions, reports, media/data points/avatar uploads, comments on deleted data points, then any retained `DataPointChains.CreatedByUserId` / `Tags.CreatedByUserId` references reassigned to a single well-known non-authenticating system tombstone user row provisioned at deploy time—not a shared deleted end-user account). Comments that survive because their parent data point still remains visible are reassigned to that same system tombstone user before the live user row is removed.
+- **AvatarUploads**: dedicated reservation entity per avatar init/replace (`UploadId`, `OwnerUserId`, `ClientRequestId`, `Status`, `ReservedBytes` = photo type max, `RequestedSizeBytes`, `StagingBlobPath`, `CanonicalBlobPath`, `UploadExpiresUtc`, `RowVersion`). Concurrent replacements insert or refresh distinct rows under the unique (`OwnerUserId`, `ClientRequestId`) key and optimistic concurrency; overwriting one live pointer is forbidden so the janitor can always release the correct `ReservedBytes` for each charged reservation. At most one non-terminal pending reservation is active per user, enforced by serializing init/replace per owner in one transaction (lock the `Users` row, cancel/release prior pending avatar reservations, then debit/insert or refresh the replacement). Avatars require clean malware verdict before `Users.AvatarBlobPath` is set; human content-moderation queue is **optional** for avatars (default: auto-ready after clean malware + signature validation) but data-point media still requires moderation approval before `Ready`.
+- **UserConsents** / **GpsFixes**: `UserConsents` is a single mutable current-state row per (`UserId`, `Purpose`, `PolicyVersion`) via the unique key above; `POST /api/users/me/consents` upserts that row and updates `Granted` / `RecordedUtc` / `RevokedUtc` instead of appending a second competing row for the same tuple. GPS-assisted operations enforce the resulting non-revoked grant for the current policy version at mint **and** redeem; expired fixes are purged on the §8 cadence and always deleted during erasure.
 - **ErasedSubjectHashes**: purpose-limited, non-reversible identity blocklist retained after `Users` scrub so receipt-only status and anti-reprovisioning both remain implementable without keeping live PII or matching JWTs to a tombstone subject.
 - **DataPointChains**: logical timeline grouping; membership is via `DataPoints.ChainId`. Empty chains **are** supported: only `CreatedByUserId` may add the first node without a visible-node proximity match; later nodes use normal association rules.
 - **Tags** / **DataPointTags**: many-to-many labels; `IsSystem = 1` rows are the predetermined catalog (seeded), custom tags are user-created with unique normalized names.
-- **Media**: column contract as in DDL. `ReservedBytes` is the **per-type maximum** for abuse containment; client `requestedSizeBytes` is expected size only; concurrency-safe total lives on `Users.PendingReservedBytes`. Abuse containment pairs that counter with either a size-enforcing upload proxy **or** a sub-minute uncommitted-block inspector plus committed-oversize cleanup (§6). Only an idempotent finalization step may promote data-point media to `Ready` after clean malware + thumbnail success + moderation approval.
+- **Media**: column contract as in DDL. `ReservedBytes` is the **per-type maximum** for abuse containment; client `requestedSizeBytes` is expected size only; concurrency-safe total lives on `Users.PendingReservedBytes`. A **hard** byte cap requires the size-enforcing upload proxy path; retained direct-to-Blob SAS for large uploads is documented only as bounded cleanup with sub-minute uncommitted-block inspection plus committed-oversize cleanup (§6), not as a strict pre-storage quota guarantee. Only an idempotent finalization step may promote data-point media to `Ready` after clean malware + thumbnail success + moderation approval.
 - **OutboxMessages**: transactional outbox with unique `DedupKey` per upload/work type.
 - **UserExportRequests** / **UserErasureRequests**: as in DDL. Exports: authenticated owner + download receipt. Erasure status: **receipt-only** against `StatusReceiptHash` (§12)—never JWT/`UserId` after scrub.
 - **Comments**: `ParentCommentId` is a single-column FK with `ON DELETE SET NULL`; writes enforce same-`DataPointId` as parent transactionally; erased authors are anonymized/tombstoned so replies remain.
@@ -411,7 +412,7 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 }
 ```
 
-API errors use RFC 7807 Problem Details (`application/problem+json`) for 4xx/5xx with stable `type`/`code` values (validation, not-found, forbidden, account-closed, quota-exceeded). Do not return stack traces or internal IDs beyond what the contract allows.
+API errors use RFC 7807 Problem Details (`application/problem+json`) for 4xx/5xx with stable `type`/`code` values (validation, not-found, forbidden, account-closed, quota-exceeded). Route examples below call a central helper such as `ApiProblems.Validation(...)` that writes those stable fields through the app's Problem Details service/factory; do not return stack traces or internal IDs beyond what the contract allows.
 
 Opaque pagination cursors are produced and verified with ASP.NET Data Protection (`IDataProtector`) or equivalent authenticated server-side handles: payload includes `callerUserId`, route, seek keys, and bound query inputs; set a short TTL (§8); reject tampered/expired tokens without leaking which field failed.
 
@@ -439,7 +440,9 @@ if (!double.IsFinite(latitude)
     || radiusMeters is < 1 or > 50_000
     || pageSize is < 1 or > 100)
 {
-    return Results.BadRequest("Invalid nearby search parameters.");
+    return ApiProblems.Validation(
+        code: "nearby.invalid-parameters",
+        detail: "Latitude, longitude, radiusMeters, and pageSize must be within the documented bounds.");
 }
 
 // Resolve caller identity server-side from the validated token (iss + oid → the stable user identity key).
@@ -448,7 +451,9 @@ Guid currentUserId = await userDirectory.GetCurrentUserIdAsync(HttpContext.User,
 if (request.Cursor is not null
     && (request.Cursor.DistanceMeters is null || request.Cursor.DataPointId is null))
 {
-    return Results.BadRequest("Nearby cursor must include both distance and dataPointId.");
+    return ApiProblems.Validation(
+        code: "nearby.invalid-cursor",
+        detail: "Nearby cursor must include both distanceMeters and dataPointId.");
 }
 double? cursorDistance = request.Cursor?.DistanceMeters;
 long? cursorDataPointId = request.Cursor?.DataPointId;
@@ -508,10 +513,11 @@ Chain-candidate lookup for create uses the same visibility predicate (including 
 ### Migration Strategy
 
 - **Selected approach (Option A)**: EF Core migrations are the schema source of truth.
-- No database has been created yet, so there is no existing `dbo.DataPoints` table or application data to migrate, backfill, or preserve.
-- Before deploying the database resources, remove the old create-if-missing SQL path and create the initial schema from the first EF Core migration/bundle.
+- Treat the rollout as greenfield **only after** an environment inventory confirms that no shared/dev/prod environment has ever run the current Functions + create-if-missing SQL path. The repository and current-state table still describe a deployable `dbo.DataPoints` schema, so this check is mandatory before cutover.
+- If any environment already contains `dbo.DataPoints` rows, stop and write a dedicated migration/data-disposition plan (mapping `Location NVARCHAR(200)` rows, missing `UserId`/`Title`, rollback, and cutover sequencing) before shipping the EF schema. Do not strand live rows behind a “no backfill” assumption.
+- Before the first EF-backed deployment, remove the old create-if-missing SQL path and create the initial schema from the first EF Core migration/bundle.
 - Ensure the initial EF Core migration explicitly emits `CREATE SPATIAL INDEX IX_DataPoints_Location ...` because the `Location` mapping alone does not create the spatial index. Emit that DDL with `migrationBuilder.Sql("""CREATE SPATIAL INDEX ...""", suppressTransaction: true)`: SQL Server rejects `CREATE SPATIAL INDEX` inside an explicit transaction, and EF Core migration SQL is transactional by default. Because `suppressTransaction: true` makes this step non-atomic with the rest of the migration, the statement must be retry-safe (e.g. create only when `IX_DataPoints_Location` is absent, or an equivalent existence guard) so a failed/partial apply can be re-run without leaving the migration permanently stuck.
-- If the schema design changes again before first deployment, update the initial migration and redeploy; no rollback/data-disposition process is required until persisted data exists.
+- If the environment inventory proves there is still no deployed data, schema-only redesigns before first deployment may continue by updating the initial migration/bundle directly.
 
 ## 4. Authentication & Authorization
 
@@ -568,7 +574,8 @@ JWT validation alone is not enough: register authorization with a **fallback aut
 ### Endpoints
 
 ```
-POST   /api/datapoints                  # Create: title, description, eventDate (past allowed), visibility, exactly one of mapLocation or gpsFixId, optional chainId XOR linkToDataPointId, associationRadiusMeters, tagIds[] + customTagNames[]
+GET    /healthz/live                    # **AllowAnonymous** liveness probe for Azure Front Door/App Service origin health only; returns no user/domain data, does not require JWT, and must not JIT-provision profiles
+POST   /api/datapoints                  # Create: title, description (max 4,000 chars), eventDate (past allowed), required visibility, exactly one of mapLocation or gpsFixId, optional chainId XOR linkToDataPointId, associationRadiusMeters, tagIds[] + customTagNames[]
 GET    /api/datapoints/nearby           # Proximity search around explicit map-selected coordinates (lat [-90,90], lng [-180,180], radiusMeters 1-50000 default 250, opaque route-specific cursor bound to /nearby + issuing callerUserId + the same center/radius/pageSize, pageSize default 25 max 100); visibility via JWT user + Accepted follow graph only, with private posts returned only when `DataPoints.UserId == currentUserId`
 GET    /api/datapoints/nearby/gps       # Proximity search around a previously consent-validated gpsFixId; same opaque route-specific cursor/pageSize contract as /nearby (including callerUserId binding), the cursor is rejected if reused by a different caller or with a different fix, radius, or route, and private posts are returned only when `DataPoints.UserId == currentUserId`
 GET    /api/datapoints/in-bounds        # Map viewport query (north/south/east/west, zoom, mode=clusters|points, viewportToken, cursor, pageSize default 200 max 500); same visibility rules; cluster pages use a stable cluster cursor, point pages use a stable leaf-point cursor, every visibility-dependent cursor binds callerUserId, and any viewport/mode/caller change invalidates the prior cursor
@@ -586,7 +593,7 @@ POST   /api/chains/{chainId}/datapoints # Add a new data point into an existing 
 GET    /api/tags                        # List system tags + caller's recent custom tags (search q= optional)
 POST   /api/tags                        # Create custom tag (idempotent on NormalizedName)
 
-POST   /api/datapoints/{id}/media       # Author only: requires a client-generated idempotency key plus requestedSizeBytes (and media type); create/refresh the caller-owned PendingUpload row with ReservedBytes set to the per-type maximum (requestedSizeBytes is expected size only and must be ≤ that max), expiry + canonical blob key, atomically debit Users.PendingReservedBytes by that type max via conditional counter update (not a SUM read / not the tiny client declaration), and return the same UploadId/SAS/ReservedBytes reservation without a second debit when that key is retried before expiry
+POST   /api/datapoints/{id}/media       # Author only: requires a client-generated idempotency key plus requestedSizeBytes (and media type); create/refresh the caller-owned PendingUpload row with ReservedBytes set to the per-type maximum (requestedSizeBytes is expected size only and must be ≤ that max), expiry + canonical blob key, atomically debit Users.PendingReservedBytes by that type max via conditional counter update (not a SUM read / not the tiny client declaration), and return the same UploadId/SAS/ReservedBytes reservation without a second debit when that key is retried before expiry. If the product needs a hard byte cap before storage accepts the upload, route through the size-enforcing proxy; direct SAS remains the bounded-cleanup path for large uploads, not a strict staging-cap guarantee
 POST   /api/datapoints/{id}/media/complete # Validate the existing PendingUpload row/blob against requestedSizeBytes/ReservedBytes/per-type max; failed validation transitions it to Quarantined/Rejected and decrements Users.PendingReservedBytes, successful validation in one SQL transaction moves it to Processing/PendingModeration as appropriate, releases or converts the reserved counter bytes, writes one deduplicated OutboxMessages row, and lets the retrying dispatcher publish queue work
 POST   /api/datapoints/{id}/comments    # Add comment (caller must be allowed to view the post)
 GET    /api/datapoints/{id}/comments    # List comments oldest-first; cursor = (createdUtc, commentId) and the seek predicate is > on that ascending tuple; pageSize default 50 max 100
@@ -595,16 +602,15 @@ DELETE /api/datapoints/{id}/reactions   # Remove caller's reaction
 
 GET    /api/users/{id}                  # Get user profile (avatar returned as a short-lived signed read URL when AvatarBlobPath is set—never as a raw writable path)
 PUT    /api/users/me                    # Update own profile fields only (display name, bio); must not accept AvatarBlobPath or any client-supplied blob path
-POST   /api/users/me/avatar             # Caller only: init/replace avatar upload; requires client idempotency key + requestedSizeBytes (photo types only); creates/refreshes a row in dbo.AvatarUploads (not a Users.AvatarUploadId pointer) under avatars/{userId}/... with ClientRequestId, Status, ReservedBytes = photo per-type max, StagingBlobPath, CanonicalBlobPath, UploadExpiresUtc, and RowVersion; avatar init runs under a lock/serializable recheck plus a filtered unique "one active reservation per owner" invariant so concurrent requests cannot create two live charged rows; atomically debits Users.PendingReservedBytes by that max only for the surviving reservation; returns UploadId/SAS/ReservedBytes (same reservation on key retry); optional API-proxied upload path may replace direct SAS when a hard body-size limit is required
+POST   /api/users/me/avatar             # Caller only: init/replace avatar upload; requires client idempotency key + requestedSizeBytes (photo types only); creates/refreshes a row in dbo.AvatarUploads (not a Users.AvatarUploadId pointer) under avatars/{userId}/... with ClientRequestId, Status, ReservedBytes = photo per-type max, StagingBlobPath, CanonicalBlobPath, UploadExpiresUtc, and RowVersion; avatar init runs under a lock/serializable recheck plus a filtered unique "one active reservation per owner" invariant so concurrent requests cannot create two live charged rows, cancelling/releasing prior non-terminal reservations before debiting the surviving row; returns UploadId/SAS/ReservedBytes (same reservation on key retry); optional API-proxied upload path may replace direct SAS when a hard body-size limit is required
 POST   /api/users/me/avatar/complete    # Validate the AvatarUploads pending blob, run the same malware/signature gates as media, seal to the canonical avatar path, set Users.AvatarBlobPath server-side from that row, release/convert reserved bytes on the AvatarUploads row, delete prior avatar objects after the new path is live, and schedule erasure/janitor cleanup of abandoned AvatarUploads reservations
 POST   /api/users/me/gps-fixes          # Bind a freshly captured device GPS fix to the authenticated user after verifying current consent; returns short-lived gpsFixId
-POST   /api/users/me/consents           # Record location/GPS consent (purpose, policyVersion, granted, client timestamp)
+POST   /api/users/me/consents           # Upsert the single current location/GPS consent row for (caller, purpose, policyVersion); updates granted/revoked state and timestamps instead of appending a second competing row
 GET    /api/users/me/consents           # Current consent state used to gate GPS-assisted create/search
 POST   /api/users/me/export-requests    # Request a full user-data export job; response returns a one-time opaque download receipt in the body (shown once; client must store it out-of-band—never embed it in URLs or logs); server persists only `DownloadReceiptHash` (not the raw receipt) with `DownloadExpiresUtc` null until the archive is ready
 GET    /api/users/me/export-requests/{id} # Authenticated owner checks durable job state; when Status is Ready and `DownloadExpiresUtc` is still in the future, the short-lived signed download URL is returned only if the client also presents the opaque download receipt via a non-URL channel (e.g. `X-Export-Download-Receipt` header)—never authorize download by path/request id or authenticated ownership alone
 POST   /api/users/me/erasure-requests   # Authenticated: start async erasure; response returns a one-time opaque status receipt (≥256-bit entropy, shown once; client stores out-of-band—never URLs/logs); server persists only `StatusReceiptHash` and, on completion path, inserts `ErasedSubjectHashes` for the caller before scrubbing `Users`
 GET    /api/erasure-requests/{id}       # **AllowAnonymous**, receipt-only status (preferred path; also accept legacy `/api/users/me/erasure-requests/{id}` as an alias with the same rules). Require opaque receipt via non-URL channel (`X-Erasure-Receipt` header or body). Authorize solely by constant-time compare of SHA-256(receipt) to `StatusReceiptHash` for `{id}`. Do not require JWT; ignore JWT for authZ; never JIT-provision; never authorize by path id or tombstone subject. Rate-limit by IP + request id (§8)
-GET    /healthz/live                    # **AllowAnonymous** liveness probe for Azure Front Door/App Service origin health only; returns no user/domain data, does not require JWT, and must not JIT-provision profiles
 PUT    /api/users/{id}/follow           # Request to follow (creates/reopens Pending; rejects self-follow; does not grant FollowersOnly visibility until Accepted)
 DELETE /api/users/{id}/follow           # Unfollow / cancel pending request
 GET    /api/users/me/follow-requests    # Followee: list Pending inbound follow requests
@@ -657,6 +663,7 @@ GET /api/datapoints/nearby?lat=52.52&lng=13.405&radiusMeters=250&pageSize=25&cur
 
 - Pagination is cursor-based (not OFFSET) for large result sets; every visibility-dependent cursor (nearby, nearby/gps, in-bounds, place search, chain-candidates, timeline, feed, comments on a visibility-gated post) is an opaque, signed short-lived token (or equivalent authenticated handle) that **binds and validates the issuing caller's internal `UserId`** in addition to route/search inputs—redeem rejects a cursor when `payload.callerUserId != currentUserId` so one account cannot replay another's visibility-filtered seek boundary and skip eligible rows. Nearby cursors also bind the route/search mode plus the `(distanceMeters, dataPointId)` seek boundary to the original center/`gpsFixId`, radius, and page size before applying the next seek; chain-candidate cursors are a separate opaque token that binds the same caller + center/`gpsFixId`, radius, and page size to the heterogeneous seek boundary `(minVisibleDistanceMeters, candidateKind, stableId)` with ascending order and seek `>` (chain distance = minimum visible-node distance; do not reuse the nearby leaf-point cursor); timeline cursors bind caller + `(eventDate, dataPointId)` with `EventDate DESC, DataPointId DESC` and seek `<`, feed cursors bind caller + `(createdUtc, dataPointId)` with `CreatedUtc DESC, DataPointId DESC` and seek `<`, comments cursors bind caller + `(createdUtc, commentId)` with `CreatedUtc ASC, CommentId ASC` and seek `>`, and empty pages return no continuation cursor
 - Reject invalid coordinates/radius/page size/bounds with HTTP 400 before `Point(...)`, `STDistance`, and `Take(...)`
+- Create/update validation treats `visibility` as a required JSON property (for example, a required nullable enum plus validator); the API must reject omitted/null values with Problem Details instead of letting model binding default the enum to `Public`
 - Bounding-box pre-filter before `STDistance` for map viewport and place-search result windows; when a viewport crosses the antimeridian (`west > east`), split the longitude predicate into west→180 and -180→east ranges while keeping the same viewport token/cursor contract
 - Place search: Azure Maps Search (or equivalent) geocodes the query string → center/bbox → same visibility-filtered spatial query; response includes `mapBounds` so the client can fit all returned points, plus bounded result items (`pageSize` + `cursor`) and clusters when the viewport is too broad for raw markers
 - Viewport refine: client debounces `moveend`/`zoomend`, calls `/in-bounds`, replaces markers + list, and keeps following continuation cursors while the viewport is unchanged; `/in-bounds` explicitly paginates either `mode=clusters` with a stable `(clusterSortKey, clusterId)` cursor or `mode=points` with a stable `(eventDate, dataPointId)` cursor bound to the same `viewportToken`; narrowing the map narrows the query, while low-zoom/world-scale boxes return clusters or a capped page instead of an unbounded raw point list
@@ -685,16 +692,16 @@ Client → API (request upload URL with requestedSizeBytes + media type)
         create + write Blob SAS for that server-owned uploadId/blob key (SAS TTL measured in minutes, ≤ pending-row expiry)
        → Client uploads directly to Blob Storage at a SAS-writable staging key **or** through the size-enforcing API proxy when required by §6 decisions; chunked direct uploads apply `If-None-Match: *` on final `Put Block List` (and single-shot on `Put Blob`), not only on uncommitted `Put Block`s
        → **Committed oversize cleanup**: Event Grid / sub-minute reaper deletes staging objects whose committed length exceeds the reservation or per-type max and releases counter bytes—do not wait solely for client complete or long expiry
-       → **Uncommitted-block abuse containment** (required for any create+write SAS path; `BlobCreated` and committed-length checks do not see staged blocks): either (A) route chunked uploads through a size-enforcing API/proxy that tracks cumulative body bytes and hard-stops at `ReservedBytes`/per-type max, or (B) keep direct SAS only when a short-cadence uncommitted-block inspector runs for every live `PendingUpload` / `AvatarUploads` staging key—`Get Block List` with `blocklisttype=uncommitted` (or uncommitted+committed), sums block sizes, and if staged bytes exceed `ReservedBytes`/per-type max **or** the reservation/SAS is expired/abused, **deletes the staging blob** (which discards uncommitted blocks), rejects the media or `AvatarUploads` row, and releases `Users.PendingReservedBytes`. The inspector path is bounded/reactive cleanup, **not** a true hard byte cap before storage accepts the blocks, so routes that promise a hard upload limit must use the proxy path. Inspector cadence must be sub-minute while any write SAS for that key is still valid; do not rely on Azure’s multi-day uncommitted-block GC as the control. **Default policy**: avatars and photo single-shot uploads prefer (A) or single `Put Blob`; large video may use (B) with inspector + short SAS TTL (§8)
+       → **Uncommitted-block abuse containment** (required for any create+write SAS path because `BlobCreated` and committed-length checks do not see staged blocks): if the product needs a **hard** cap before storage accepts bytes, route the upload through the size-enforcing API/proxy that tracks cumulative body bytes and hard-stops at `ReservedBytes`/per-type max. Retained direct SAS is acceptable only as a **bounded/reactive cleanup** path for large uploads: run a short-cadence uncommitted-block inspector for every live `PendingUpload` / `AvatarUploads` staging key—`Get Block List` with `blocklisttype=uncommitted` (or uncommitted+committed), sum block sizes, and if staged bytes exceed `ReservedBytes`/per-type max **or** the reservation/SAS is expired/abused, **delete the staging blob** (which discards uncommitted blocks) and reject the media or `AvatarUploads` row. Inspector cadence must be sub-minute while any write SAS for that key is still valid; do not rely on Azure’s multi-day uncommitted-block GC as the control. **Default policy**: avatars and photo single-shot uploads use (A) or single `Put Blob`; retained direct chunked SAS is limited to large-video-style bounded cleanup with short TTLs (§8), not a guaranteed strict quota
        → Client confirms upload → API validates the staging blob exists and matches expected ETag/size/hash/signature and does not exceed `requestedSizeBytes` / `ReservedBytes` / per-type max,
         then seals that exact validated version by conditionally copying the validated ETag to the server-write-only canonical blob key that
         workers and read URLs use, and in one SQL transaction updates the existing media row to Quarantined (manual-hold only with `QuarantineReviewByUtc`)
-        or Processing/PendingModeration/Rejected as appropriate, decrements or converts `Users.PendingReservedBytes` for the released reservation,
+        or Processing/PendingModeration/Rejected as appropriate, and releases or converts `Users.PendingReservedBytes` according to the selected proxy/direct cleanup path,
         and, only on the first `PendingUpload` → `Processing` / `PendingModeration` transition, inserts exactly one transactional outbox row for successful malware-scan/thumbnail/moderation work keyed by `UploadId` + work type
        → Retrying outbox dispatcher publishes the queue message (at-least-once) until acknowledged
        → Microsoft Defender for Storage malware scanning (or an equivalent required scanner) publishes result events; a scan-result worker correlates them by blob path/`UploadId`, records `MalwareScanVerdict` + `MalwareScannedUtc` idempotently on `Media`/`AvatarUploads`, retries transient delivery/lookup failures, and marks `Error/Timeout` after the bounded timeout window when no clean verdict arrives
        → Expired `PendingUpload` rows/blobs (decrementing `Users.PendingReservedBytes` for their `ReservedBytes`), expired `Quarantined` manual holds, and bounded-retention `Rejected` artifacts are removed by a janitor that deletes both blob objects and media metadata
-       → Queue worker reads that persisted malware verdict and obtains a clean result before any ImageSharp/FFmpeg parse; malicious results reject the upload, while failed/timed-out scans keep the object non-Ready in `Quarantined` without parsing or serving it until a clean rescan or an operator reject via `POST /api/moderation/media/{mediaId}/reject`
+       → Queue/thumbnail workers must read that persisted malware verdict and obtain a clean result before any ImageSharp/FFmpeg parse; malicious results reject the upload, while missing/failed/timed-out scans keep the object non-Ready in `Quarantined` without parsing or serving it until a clean rescan or an operator reject via `POST /api/moderation/media/{mediaId}/reject`
        → Azure Function (queue trigger) generates thumbnail idempotently to the canonical path `media/{userId}/{dataPointId}/thumbnails/{uploadId}.jpg`, updates media thumbnail fields, and records `ThumbnailReadyUtc`
        → Media.Status becomes Ready only in a separate idempotent finalization transaction after validation + clean malware verdict + thumbnail success + moderation approval are all recorded; until then it remains non-public
         (`PendingModeration`, `Quarantined`, or `Rejected` as appropriate), and read APIs / signed URLs only expose Ready media
@@ -705,7 +712,7 @@ Client → API (request upload URL with requestedSizeBytes + media type)
 ### Decisions
 
 - **Container structure**: SAS-writable staging originals `media/{userId}/{dataPointId}/staging/{uploadId}/{fileName}`, sealed canonical originals `media/{userId}/{dataPointId}/{uploadId}/{fileName}`, and thumbnails `media/{userId}/{dataPointId}/thumbnails/{uploadId}.jpg` (canonical paths derived from `UploadId`, not random names)
-- **Allowed types**: JPEG, PNG, WebP, MP4, MOV (validate blob signatures/content server-side, not only client-supplied MIME + extension, before publishing); a clean malware-scan verdict is required before ImageSharp/FFmpeg thumbnail parsing or any publication step—malicious findings reject the upload, and failed or timed-out scans leave the media in a non-Ready quarantine/hold until a clean rescan or explicit operator rejection, never parsing or serving the object meanwhile
+- **Allowed types**: JPEG, PNG, WebP, MP4, MOV (validate blob signatures/content server-side, not only client-supplied MIME + extension, before publishing); a clean malware-scan verdict from Defender-for-Storage + Event Grid orchestration is required before ImageSharp/FFmpeg thumbnail parsing or any publication step—malicious findings reject the upload, and failed or timed-out scans leave the media in a non-Ready quarantine/hold until a clean rescan or explicit operator rejection, never parsing or serving the object meanwhile
 - **Malware scanning infrastructure**: provision Microsoft Defender for Storage malware scanning (or an equivalent scanner with the same guarantees) plus Event Grid delivery of scan results to a queue/topic consumed by a scan-result worker. Correlate results to `Media` / `AvatarUploads` by sealed blob path and `UploadId`, persist `MalwareScanVerdict`/`MalwareScannedUtc` idempotently, retry transient event-processing failures, and transition to `Error/Timeout` + quarantine/manual-hold when the configured scan timeout window elapses without a clean verdict
 - **Max file size**: 50 MB photos, 500 MB videos
 - **Upload quota enforcement**: Blob SAS cannot hard-cap object size, so client-declared `requestedSizeBytes` alone is only a **reactive** completion check—not hard abuse containment. Before minting a SAS the API therefore **reserves the per-type maximum** for the declared media type (photo 50 MB / video 500 MB, or the avatar photo max) as `Media.ReservedBytes` (or `AvatarUploads.ReservedBytes`)—not the possibly-tiny client declaration—and **atomically** debits that full per-type max against `Users.PendingReservedBytes` with one conditional update that only succeeds when `PendingReservedBytes + reservedMax <=` the configured pending-upload quota; a 0-row update is a hard refusal. `requestedSizeBytes` remains required (must be > 0 and ≤ that per-type max) as the expected size for completion validation and UX, but quota accounting always charges the type maximum so a client cannot reserve one byte and stream a much larger block blob under the pending cap. Do not enforce the cap by reading `SUM(ReservedBytes)` under default `READ COMMITTED`. Idempotent retries of the same live `ClientRequestId` return the existing reservation without a second counter debit. **`PendingReservedBytes` is not sufficient by itself against chunked-upload abuse**: a caller holding create+write SAS can issue many large `Put Block` requests and never call `Put Block List`; uncommitted blocks do **not** emit `BlobCreated`, are **not** covered by committed-length checks, and can remain stored for days under platform GC—so one 500 MB reservation could otherwise consume far more storage. A direct create+write SAS path therefore offers only **bounded/reactive cleanup**, not a strict hard byte ceiling before storage accepts the data. Routes that must promise a hard per-upload cap (especially avatars and any single-shot photo path) must use a **size-enforcing upload proxy/gateway** that counts cumulative request body bytes and rejects further writes at `ReservedBytes`/per-type max. Retained direct-to-Blob chunked SAS is acceptable only for flows that explicitly tolerate that bounded/reactive posture (for example large video), and then only with an **early uncommitted-block inspection/cleanup** job that, on a sub-minute cadence for every live pending media or `AvatarUploads` staging key with an unexpired write SAS, calls `Get Block List` (`blocklisttype=uncommitted`, and committed when present), sums staged block sizes, and when the sum exceeds `ReservedBytes`/per-type max—or the reservation is expired/revoked—**deletes the staging blob** (discarding uncommitted blocks), transitions the media or `AvatarUploads` row to `Rejected`, and releases `Users.PendingReservedBytes`. Platform multi-day uncommitted-block garbage collection is **not** an accepted control. Additionally pair with (a) **immediate committed-blob cleanup**: Event Grid / storage listener on staging-blob create or a sub-minute reaper that deletes any staging object whose **committed** length exceeds the reservation or per-type max (and rejects the media/`AvatarUploads` row, releasing counter bytes) without waiting for client completion or the longer expiry janitor, (b) **short write-SAS TTL** (minutes, always ≤ `UploadExpiresUtc`) so abandoned staging windows close quickly, and (c) **storage-level limits**: container/account capacity alerts plus per-user rate limits on upload init and direct PUT bandwidth where available. Photos that fit in a single `Put Blob` should prefer single-shot upload so uncommitted-block staging is unnecessary; chunked `Put Block` remains only where required (large video) and then only under proxy or uncommitted-block inspection above. Completion still rejects blobs larger than `requestedSizeBytes`/`ReservedBytes`/per-type max, releases or converts the reserved amount by decrementing `Users.PendingReservedBytes` in the same transaction as the status transition, and the short-cadence janitor remains a backstop for expired pending rows/blobs
@@ -715,7 +722,7 @@ Client → API (request upload URL with requestedSizeBytes + media type)
 - **Thumbnail worker**: queue delivery is at-least-once, so thumbnail blob paths must be deterministic (`media/{userId}/{dataPointId}/thumbnails/{uploadId}.jpg`) across the producer, worker, and signed-read URL builder; the worker runs only after a clean malware-scan verdict and must refuse to parse or write when the user/media deleting lease/version is set; if the thumbnail already exists, treat that as success after verifying/upserting metadata, otherwise create it and then upsert metadata without duplicate side effects
 - **Blob SAS**: mint user-delegation SAS tokens with the API managed identity (no retained storage account keys); uploads are constrained to a single staging blob path with create + write permissions so chunked `Put Block` / `Put Block List` uploads work, and with a **short TTL (minutes, ≤ pending-row expiry)** so write capability cannot outlive the reservation the uncommitted-block inspector and expiry janitor enforce. **Overwrite protection**: `If-None-Match: *` must be applied on the commit that creates the blob—`Put Block List` for chunked uploads and `Put Blob` for single-shot uploads. Uncommitted `Put Block` calls only stage blocks and do not create the blob, so conditioning those initial block PUTs alone does not prevent overwrite; clients (and any SDK wrapper) must send `If-None-Match: *` on the final commit operation. Because those same uncommitted blocks also bypass `BlobCreated`/committed-length quota checks, any create+write SAS path **must** run the §6 uncommitted-block inspector (or use a size-enforcing proxy instead of direct chunked SAS)—see **Upload quota enforcement**. Completion validates the staging blob's ETag/size/hash then conditionally seals that exact validated ETag by copying it to the server-write-only canonical blob key before any processing or publish step; workers/read URLs never use the staging object, and Key Vault remains only for secrets that cannot use identity-based access
 - **Upload networking**: because web/mobile clients upload directly, the Blob service endpoint must remain publicly reachable for the upload container, but anonymous blob access stays disabled and Blob service CORS is configured in IaC for each allowed SPA origin plus the required `PUT`/preflight headers/methods—never wildcard origins—while SAS scope/TTL still restrict access to the intended blob path
-- **CDN**: Azure Front Door Premium (`azurerm_cdn_frontdoor_*`) for media delivery; the API issues short-lived, visibility-checked read URLs whose query string carries a blob-read SAS for the single canonical object, and Front Door forwards that full SAS query string to Blob Storage over the selected origin route. **Do not cache visibility-protected/SAS media routes in Front Door**: a fixed cache TTL cannot track remaining SAS lifetime, so protected reads must always revalidate at the origin. Only future public-media routes may enable caching, and then the cache key must still vary on the full authorization query string
+- **CDN**: Azure Front Door Premium (`azurerm_cdn_frontdoor_*`) fronts media delivery; visibility-protected media/avatar routes are **not cacheable**, so configure those routes/origins with `Cache-Control: no-store` (or equivalent AFD no-cache policy) and forward the full SAS query string to Blob Storage on every request so Blob authorization is re-evaluated per access. A fixed cache TTL cannot track remaining SAS lifetime, so protected reads must always revalidate at the origin. Only future explicitly public-media routes may enable edge caching, and then only with route-specific authorization semantics whose cache key still varies on the full authorization query string
 - **Moderation**: Azure Content Safety or manual review queue for uploaded media while Status remains `PendingModeration` / non-Ready; admin approval records moderation state, operators may reject from either `PendingModeration` or `Quarantined` into `Rejected`, and a finalizer performs the single idempotent transition to `Ready` only after a clean `MalwareScanVerdict`, `ModerationApprovedUtc`, and `ThumbnailReadyUtc` are all present
 - **Thumbnails**: Azure Function on queue trigger using `SixLabors.ImageSharp` for images and FFmpeg or Azure Video Indexer for MP4/MOV frame thumbnails
 
@@ -727,7 +734,7 @@ This section is the product contract for create/search flows on web and mobile.
 
 1. **Location**
    - **Map pin**: user pans/zooms the map and drops a pin (default create path).
-   - **GPS**: user opts in; client reads device coordinates only after `POST /api/users/me/consents` shows grant for the current location-policy version (or records a new grant), then exchanges that device fix for a short-lived `gpsFixId` via `POST /api/users/me/gps-fixes`. Revocation blocks new handle minting and causes any still-unexpired `gpsFixId` redemption to fail until consent is re-granted.
+   - **GPS**: user opts in; client reads device coordinates only after `POST /api/users/me/consents` shows grant for the current location-policy version (or upserts a new grant), then exchanges that device fix for a short-lived `gpsFixId` via `POST /api/users/me/gps-fixes`. Revocation blocks new handle minting and causes any still-unexpired `gpsFixId` redemption to fail until consent is re-granted.
 2. **Near / association radius**
    - UI control (slider or presets, e.g. 50 m / 100 m / 250 m / 1 km) sets `associationRadiusMeters`.
    - Client calls `GET /api/datapoints/chain-candidates` for a dropped pin or `GET /api/datapoints/chain-candidates/gps?gpsFixId=...` for a consent-validated fix; GPS-assisted candidate lookups never accept raw device coordinates on their own route.
@@ -737,7 +744,7 @@ This section is the product contract for create/search flows on web and mobile.
 3. **Historical date/time**
    - Date-time picker allows past `eventDate` values (`DATETIMEOFFSET`); validation rejects impossible calendar values but not “old” dates.
 4. **Visibility**
-   - Explicit control: Public / Followers-only / Private (maps to `Visibility` tinyint; required on create via request-binding validation/required JSON-member handling, with no database default as defense in depth, so omission is rejected instead of silently publishing as Public). Followers-only is gated by **Accepted** follows only—open/pending follow requests do not unlock those posts.
+   - Explicit control: Public / Followers-only / Private (maps to `Visibility` tinyint; required on create via request-binding validation/required JSON-member handling—for example, a required nullable enum + validator—with no database default as defense in depth, so omitted/null JSON is rejected instead of silently publishing as Public). Followers-only is gated by **Accepted** follows only—open/pending follow requests do not unlock those posts.
 5. **Tags**
    - Multi-select from predetermined system tags plus typeahead to add custom tags (multiple allowed).
 6. **Media (optional)**
@@ -787,6 +794,7 @@ Unless an environment override is documented in app configuration, implementatio
 | In-bounds `pageSize` | 200 | min 1, max 500 |
 | Comments `pageSize` | 50 | min 1, max 100 |
 | Feed `pageSize` | 25 | min 1, max 100 |
+| Data-point description length | 4,000 chars | enforce in request validation and `NVARCHAR(4000)` |
 | Photo max / type reservation | 50 MB | `ReservedBytes` charges this max |
 | Video max / type reservation | 500 MB | `ReservedBytes` charges this max |
 | Avatar max / type reservation | 10 MB | photo types only; prefer size-enforcing proxy |
@@ -803,8 +811,9 @@ Unless an environment override is documented in app configuration, implementatio
 | Export download window | 72 hours after Ready | then delete blob; keep audit row |
 | Quarantine manual-hold max | 7 days | then janitor rejects/deletes |
 | Rejected media retention | 30 days | audit/review then delete |
-| Data-point retention | 10 years | configurable; scheduled soft-delete/purge job |
-| Signed media/avatar read URL TTL | ≤ 15 minutes | Front Door caching disabled for visibility-protected/SAS media routes |
+| Data-point retention | 10 years | configurable; after the retention deadline, purge or irreversibly anonymize location/title/description within the grace window below |
+| Retention purge grace window | 30 days | soft-delete may be an intermediate operational flag only, never the terminal retention state |
+| Signed media/avatar read URL TTL | ≤ 15 minutes | Front Door caching disabled / no-store for visibility-protected SAS media routes |
 | Admin role claim | `roles` contains `Admin` | assigned only via Entra app role / group—no self-service |
 
 ## 9. Social Features
@@ -836,7 +845,7 @@ Unless an environment override is documented in app configuration, implementatio
 |---|---|
 | `azurerm_storage_account` (media) | User-uploaded photos/videos |
 | `azurerm_storage_queue` (or Service Bus queue/topic) | Durable media-work queue consumed by the outbox dispatcher and thumbnail/moderation workers |
-| `azurerm_eventgrid_system_topic` + event subscription (or equivalent) | Deliver Blob-created / malware-scan result events to the cleanup and scan-result workers |
+| `azurerm_eventgrid_system_topic` + event subscription (or equivalent blob event source) | Deliver staging-blob create events and Defender-for-Storage malware scan results to the cleanup and scan-result workers |
 | Microsoft Defender for Storage (or equivalent malware scanner configuration) | Produce authoritative malware verdicts for staged/canonical uploads before parsing or publication |
 | `azurerm_role_assignment` on the media storage account | Grant `ReMind.Api` least-privilege SAS issuance roles (`Storage Blob Delegator` plus blob data role needed for existence/metadata checks) and grant the thumbnail worker blob read/write rights |
 | `azurerm_cdn_frontdoor_profile` + endpoint/origin-group/origin/route (Premium tier) | Front Door entry for both media delivery and the public `ReMind.Api` hostname, with the API origin group probing anonymous `GET /healthz/live` and SAS-protected media routes configured without caching (or, if caching is later enabled for signed media, the cache key must vary on the full SAS query string per §6) |
@@ -847,7 +856,7 @@ Unless an environment override is documented in app configuration, implementatio
 | `azurerm_virtual_network` + subnets | Private network boundary for SQL private endpoint and app integration |
 | `azurerm_private_endpoint` + `azurerm_private_dns_zone` + **zone VNet link** + **private DNS zone group** on the endpoint | Private SQL connectivity and name resolution from the integrated VNet |
 | `azurerm_app_service_virtual_network_swift_connection` (or Container Apps VNet integration) | Allow `ReMind.Api` (and thumbnail Function if applicable) to reach SQL over the private endpoint |
-| `azurerm_user_assigned_identity` (or system-assigned) + KV access policies/RBAC + SQL AAD admin/user + Blob/Queue RBAC | Managed identities for API and Function; no plaintext `SqlConnectionString` in app settings; grant the API `Storage Blob Delegator` + least-privilege blob access to mint user-delegation SAS, and grant dispatcher/thumbnail workers only the blob/queue roles required to read source uploads, write thumbnails, and ack queue work |
+| `azurerm_user_assigned_identity` (or system-assigned) + KV access policies/RBAC + SQL AAD admin/user + Blob/Queue RBAC | Managed identities for API and Function; no plaintext `SqlConnectionString` in app settings; grant the API `Storage Blob Delegator` + least-privilege blob access to mint user-delegation SAS, and grant dispatcher/thumbnail workers only the blob/queue roles required to read source uploads, write thumbnails, ack queue work, and record scan outcomes |
 | Azure Maps account (or equivalent geocoder) | Server-side place/address/city/state/country search |
 
 ### Modified Resources
@@ -855,7 +864,7 @@ Unless an environment override is documented in app configuration, implementatio
 | Resource | Change |
 |---|---|
 | `azurerm_service_plan` | Upgrade from B1 to P1v3 or switch to Container Apps |
-| `azurerm_linux_web_app` | Repurpose for `ReMind.Api`; add a separate Static Web Apps/Storage static website/Front Door origin (or documented external host) for `ReMind.Web`; Key Vault references + VNet integration; restrict direct origin ingress so only this deployment's Front Door reaches the public API origin by requiring the `AzureFrontDoor.Backend` source service tag **and** the matching `X-Azure-FDID` profile header together, then deny unmatched traffic (header-only checks are forgeable; service-tag-only checks still admit other tenants' Front Door profiles) |
+| `azurerm_linux_web_app` | Repurpose for `ReMind.Api`; add a separate Static Web Apps/Storage static website/Front Door origin (or documented external host) for `ReMind.Web`; Key Vault references + VNet integration; expose an anonymous `/healthz/live` endpoint for Front Door origin probes; restrict direct origin ingress so only this deployment's Front Door reaches the public API origin by requiring the `AzureFrontDoor.Backend` source service tag **and** the matching `X-Azure-FDID` profile header together, then deny unmatched traffic (header-only checks are forgeable; service-tag-only checks still admit other tenants' Front Door profiles) |
 | `azurerm_linux_function_app` | Keep for thumbnail generation, outbox dispatcher (if not in-process), and background jobs; managed identity + deterministic thumbnail paths + app settings / trigger bindings that point the workers at the provisioned media-work queue |
 | `azurerm_mssql_database` | Upgrade SKU from Basic to S0+ for spatial index performance |
 | `azurerm_mssql_server` | Disable public network access when the private endpoint is live |
@@ -863,6 +872,7 @@ Unless an environment override is documented in app configuration, implementatio
 ### Manual/External Resources (Not in Terraform)
 
 - Entra External ID tenant creation (Azure Portal / CLI)
+- Microsoft Defender for Storage malware scanning enablement/policy (if not managed through Terraform in the chosen subscription baseline)
 - Social identity provider app registrations (Google Cloud Console, Apple Developer, Meta for Developers)
 - DNS / custom domain configuration
 
@@ -891,15 +901,15 @@ Unless an environment override is documented in app configuration, implementatio
 ### Data Privacy (GDPR / CCPA)
 
 - Location data is personal data.
-- **Consent**: `UserConsents` stores `UserId`, `Purpose` (`LocationGps`), `PolicyVersion`, `Granted`, `RecordedUtc`, `ClientUtc`, `RevokedUtc`. GPS-assisted create/search requires a non-revoked grant for the current policy version at both `gpsFixId` mint and redeem. Map-pin coordinates remain personal data under the privacy policy and retention/erasure flows.
+- **Consent**: `UserConsents` stores `UserId`, `Purpose` (`LocationGps`), `PolicyVersion`, `Granted`, `RecordedUtc`, `ClientUtc`, `RevokedUtc`, with one mutable current-state row per (`UserId`, `Purpose`, `PolicyVersion`). GPS-assisted create/search requires a non-revoked grant for the current policy version at both `gpsFixId` mint and redeem. Map-pin coordinates remain personal data under the privacy policy and retention/erasure flows.
 - **GPS fix retention**: `GpsFixes` expire per §8; a scheduled janitor purges expired rows; erasure deletes any remaining fixes immediately.
-- **Data retention**: soft-delete or purge data points older than the §8 retention default (configurable); document the job in workers alongside media janitors.
+- **Data retention**: at the §8 retention deadline, data points must be permanently purged or irreversibly anonymized within the configured grace window; soft-delete is allowed only as that short-lived operational precursor, not as the terminal retained state. Document the retention worker alongside media janitors.
 - **Right to erasure** (ordered workflow):
   1. `POST /api/users/me/erasure-requests` (authenticated) records `UserErasureRequests`, returns a one-time ≥256-bit opaque status receipt (body only; never URLs/logs), persists only `StatusReceiptHash = SHA256(receipt)`.
   2. Mark user/media/`AvatarUploads` deleting (lease/version); stop issuing new signed URLs (short TTLs drain old ones).
   3. Tombstone/cancel queued media work; fence dispatchers/workers on the deleting lease before publish/thumbnail writes.
   4. Delete blobs/thumbnails; purge Front Door cache; final blob sweep after drain.
-  5. FK-safe SQL cleanup: `GpsFixes`, `UserConsents`, `Follows`, `Reactions`, `Reports`, `Comments`, custom-tag ownership/unused custom tags, `Media`/`AvatarUploads`/`DataPoints`, related `OutboxMessages`, export audit rows as required; reassign retained `DataPointChains`/`Tags` ownership to the deploy-time system tombstone user.
+  5. FK-safe SQL cleanup: `GpsFixes`, `UserConsents`, `Follows`, `Reactions`, `Reports`, custom-tag ownership/unused custom tags, `Media`/`AvatarUploads`, comments on deleted data points, and the user's own `DataPoints`; comments that still survive on retained data points are reassigned to the deploy-time system tombstone user before deleting `Users`, related `OutboxMessages`, or retained ownership on `DataPointChains`/`Tags`.
   6. **Before** scrubbing `Users`, insert `ErasedSubjectHashes` for `SHA256(Issuer || 0x00 || ExternalSubject)` keyed to the erasure request (idempotent).
   7. Scrub/delete the `Users` row (clear `UserErasureRequests.UserId` if needed); mark request Completed.
   8. **Status**: `GET /api/erasure-requests/{id}` is `AllowAnonymous` + receipt-only (constant-time hash compare), rate-limited per §8. JWT must not authorize, JIT, or recreate profiles. Never authorize by path id alone or tombstone-subject matching.
@@ -909,7 +919,7 @@ Unless an environment override is documented in app configuration, implementatio
 
 - Secrets in Key Vault; managed identities for API and workers; Entra-only SQL preferred; break-glass SQL creds only outside Terraform state if unavoidable
 - CORS allow-list of known SPA origins (no `*`); Blob CORS mirrors the same origins for upload methods/headers only
-- Input validation: HTML sanitize descriptions/comments, validate uploads by signature, bound radii/page sizes (§8), normalize tags
+- Input validation: HTML sanitize descriptions/comments, enforce the 4,000-char data-point description cap and existing comment bounds, validate uploads by signature, bound radii/page sizes (§8), normalize tags
 - SQL: EF Core parameterization; migration raw SQL only for controlled DDL such as `CREATE SPATIAL INDEX` (`suppressTransaction: true` + existence guard)
 - Rate limiting: auth token endpoints, place search, media/avatar init, erasure/export status (§8)
 - Security headers on SPA/API responses: CSP, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` (or strict-origin) on pages that may touch signed URLs, frame ancestors deny as appropriate
@@ -936,25 +946,23 @@ Unless an environment override is documented in app configuration, implementatio
 - `ReMind.Api` JWT auth, fallback policy, Problem Details, EF Core + NetTopologySuite
 - Scaffold `ReMind.Web` map shell (Leaflet/Mapbox)
 
-### Phase 2: Data point UX
+### Phase 2: Core
 - Create flow: map pin / GPS, `eventDate`, visibility, tags, chain candidates + owner-only `linkToDataPointId`
 - Search: nearby, place geocode, map+list, `/in-bounds`
 - Detail + chain timeline + add-from-chain
 - Profiles + consent + `gpsFixId` APIs
-
-### Phase 3: Media and user lifecycle
-- Upload pipeline with quota counter, proxy/inspector, Defender/Event Grid scan-result flow (or equivalent), outbox, thumbnails, non-cached SAS reads
+- Upload pipeline with quota counter, proxy/inspector, Defender/Event Grid scan-result flow (or equivalent), outbox, thumbnails, and non-cached SAS reads
 - Admin role assignment + moderation queue (data-point media Ready gate)
 - Avatar upload via `AvatarUploads` (+ preferred size-capped proxy)
 - Export + erasure (receipt-only status, `ErasedSubjectHashes` blocklist) + janitors
 
-### Phase 4: Social
+### Phase 3: Social
 - Follow request/accept/reject/unfollow (Accepted-only visibility; no self-follow)
 - Comments and reactions (visibility-gated)
 - Activity feed
 - Content reporting
 
-### Phase 5: Mobile + Polish
+### Phase 4: Mobile + Polish
 - React Native parity for create/search/timeline
 - Push notifications
 - Moderation automation/polish
