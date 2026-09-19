@@ -80,7 +80,7 @@ existing_titles="$(
   gh api \
     --paginate \
     -H "Accept: application/vnd.github+json" \
-    "/repos/${REPO}/issues?state=all&per_page=100" \
+    "/repos/${REPO}/issues?state=all&sort=created&direction=asc&per_page=100" \
     --jq '.[] | select(.pull_request | not) | .title'
 )"
 EXISTING_TITLES=()
