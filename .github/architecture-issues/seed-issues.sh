@@ -99,7 +99,7 @@ while :; do
     break
   fi
 
-  page_titles="$(jq -r '.[] | select(.pull_request | not) | .title' <<<"${issue_page}")"
+  page_titles="$(jq -r '.[] | select((.pull_request | not) and (.discussion | not)) | .title' <<<"${issue_page}")"
   if [[ -n "${page_titles}" ]]; then
     mapfile -t current_titles <<<"${page_titles}"
     EXISTING_TITLES+=("${current_titles[@]}")
