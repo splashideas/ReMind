@@ -141,7 +141,7 @@ CREATE TABLE dbo.DataPointTags (
 - **Comments**: `CommentId`, `DataPointId`, `UserId`, `Text`, `CreatedUtc`, nullable `ParentCommentId` (threading); writes must enforce that any parent comment belongs to the same `DataPointId` (for example via a composite `(CommentId, DataPointId)` relationship or equivalent transactional validation), and parent-comment deletes use `ON DELETE SET NULL` plus tombstone/anonymize the erased parent before any optional hard delete so other users' replies remain intact
 - **Reactions**: `ReactionId`, `DataPointId`, `UserId`, `ReactionType` (Like, Love, etc.); unique constraint on (`DataPointId`, `UserId`) means each user has exactly one current reaction per data point and a new reaction replaces the prior value
 - **Follows**: `FollowerId`, `FolloweeId`, `CreatedUtc`; unique constraint on (`FollowerId`, `FolloweeId`)
-- **Reports**: `ReportId`, `ReporterId`, nullable `DataPointId`, nullable `CommentId`, `Reason`, `Status`, `CreatedUtc`; foreign keys enforce valid targets and a CHECK constraint requires exactly one of `DataPointId` or `CommentId` to be non-null
+- **Reports**: `ReportId`, `ReporterId`, nullable `DataPointId`, nullable `CommentId`, `Reason`, `Status` (`Open` / `Resolved` / `Dismissed`), `CreatedUtc`; foreign keys enforce valid targets and a CHECK constraint requires exactly one of `DataPointId` or `CommentId` to be non-null
 
 ### Chain Association Rules
 
@@ -200,7 +200,10 @@ Never accept `userId` from the client request body or query string for authoriza
 ### Proximity Query Example
 
 ```csharp
-if (latitude is < -90 or > 90
+if (!double.IsFinite(latitude)
+    || !double.IsFinite(longitude)
+    || !double.IsFinite(radiusMeters)
+    || latitude is < -90 or > 90
     || longitude is < -180 or > 180
     || radiusMeters is < 1 or > 50_000
     || pageSize is < 1 or > 100)
@@ -255,7 +258,14 @@ var nearby = await db.DataPoints
 
 // nextCursor = nearby.Count == 0
 //     ? null
-//     : (nearby.Last().DistanceMeters, nearby.Last().DataPoint.DataPointId)
+//     : nearbyCursorProtector.Create(new NearbyCursorPayload(
+//         route: "nearby",
+//         distanceMeters: nearby.Last().DistanceMeters,
+//         dataPointId: nearby.Last().DataPoint.DataPointId,
+//         latitude: latitude,
+//         longitude: longitude,
+//         radiusMeters: radiusMeters,
+//         pageSize: pageSize))
 ```
 
 Chain-candidate lookup for create uses the same visibility predicate and `Distance <= associationRadiusMeters`, grouping matches by `ChainId` (plus standalone neighbors). Timeline queries filter `ChainId == chainId`, apply visibility, and order by `EventDate DESC` / `DataPointId DESC` with a date cursor—not distance.
@@ -358,8 +368,11 @@ DELETE /api/users/{id}/follow           # Unfollow
 GET    /api/feed                        # Activity feed (followed users' posts), newest-first; cursor = (createdUtc, dataPointId) and the seek predicate is < on that descending tuple; pageSize default 25 max 100
 POST   /api/reports                     # Report content
 GET    /api/moderation/queue            # Admin: moderation queue (CanModerate policy)
+POST   /api/moderation/datapoints/{id}/hide # Admin: hide/tombstone a reported data point and resolve linked open reports idempotently
+POST   /api/moderation/comments/{id}/hide   # Admin: hide/tombstone a reported comment and resolve linked open reports idempotently
 POST   /api/moderation/media/{mediaId}/approve # Admin: idempotently transition PendingModeration media to Ready and publish any finalization work once
 POST   /api/moderation/media/{mediaId}/reject  # Admin: idempotently transition PendingModeration media to Rejected and trigger bounded-retention cleanup
+POST   /api/moderation/reports/{reportId}/dismiss # Admin: dismiss an open report without hiding the target and record the status transition
 ```
 
 ### Create request contract (illustrative)
@@ -380,7 +393,7 @@ POST   /api/moderation/media/{mediaId}/reject  # Admin: idempotently transition 
 }
 ```
 
-Create accepts exactly one of `mapLocation` or a short-lived server-issued `gpsFixId`. `gpsFixId` values come only from `POST /api/users/me/gps-fixes`, which verifies the caller has a stored, non-revoked location consent for the current policy version before binding the coordinates to that user. Map-pin-only creates do not require device GPS consent but still treat coordinates as personal data under the privacy policy.
+Create accepts exactly one of `mapLocation` or a short-lived server-issued `gpsFixId`. `gpsFixId` values come only from `POST /api/users/me/gps-fixes`, which verifies the caller has a stored, non-revoked location consent for the current policy version before binding the coordinates to that user, and every later redeem of that handle re-checks that the same consent is still current/non-revoked before the server uses the GPS fix. Map-pin-only creates do not require device GPS consent but still treat coordinates as personal data under the privacy policy.
 The request intentionally omits any client-declared `location.source` flag: the server derives GPS-vs-map-pin handling solely from `gpsFixId` versus `mapLocation`.
 
 ### Nearby search request contract (illustrative)
@@ -389,7 +402,7 @@ The request intentionally omits any client-declared `location.source` flag: the 
 GET /api/datapoints/nearby?lat=52.52&lng=13.405&radiusMeters=250&pageSize=25&cursor=eyJtb2RlIjoibWFwIiwiZGlzdGFuY2VNZXRlcnMiOjg3LjQxLCJkYXRhUG9pbnRJZCI6MTIzNDUsImNlbnRlciI6WzUyLjUyLDEzLjQwNV0sInJhZGl1c01ldGVycyI6MjUwLCJwYWdlU2l6ZSI6MjV9
 ```
 
-`/nearby` is for explicit map-selected coordinates. GPS-assisted nearby search uses `GET /api/datapoints/nearby/gps?gpsFixId=...` with a short-lived `gpsFixId`. The continuation cursor is opaque and server-issued; it encodes the route/search mode, the `(distanceMeters, dataPointId)` seek boundary, and the bound inputs (map center or `gpsFixId`, radius, page size), and the API rejects any cursor replayed with different route or bound inputs.
+`/nearby` is for explicit map-selected coordinates. GPS-assisted nearby search uses `GET /api/datapoints/nearby/gps?gpsFixId=...` with a short-lived `gpsFixId`, and redeeming that handle re-checks current GPS consent so revocation blocks later searches even before the handle expires. The continuation cursor is opaque and server-issued; it encodes the route/search mode, the `(distanceMeters, dataPointId)` seek boundary, and the bound inputs (map center or `gpsFixId`, radius, page size), and the API rejects any cursor replayed with different route or bound inputs.
 
 ### Design Notes
 
@@ -433,6 +446,7 @@ Client → API (request upload URL)
 - **Container structure**: originals `media/{userId}/{dataPointId}/{uploadId}/{fileName}` and thumbnails `media/{userId}/{dataPointId}/thumbnails/{uploadId}.jpg` (canonical paths derived from `UploadId`, not random names)
 - **Allowed types**: JPEG, PNG, WebP, MP4, MOV (validate blob signatures/content server-side, not only client-supplied MIME + extension, before publishing)
 - **Max file size**: 50 MB photos, 500 MB videos
+- **Upload quota enforcement**: Blob SAS cannot hard-cap object size, so before minting a SAS the API reserves bytes against a bounded per-user pending-upload quota and refuses new reservations once that quota is exhausted; completion rejects oversize blobs, and a short-cadence janitor deletes expired or oversize pending blobs/rows to bound residual storage/bandwidth cost
 - **Upload identity**: the initial upload call is author-only, issues the `UploadId`, stores the canonical blob key/expiry on the pending reservation, and completion is idempotent on that `UploadId`; terminal `Ready`/`Rejected` states are no-ops on retry, duplicate completion attempts must not enqueue duplicate work, expired pending uploads are reaped so abandoned blobs do not accumulate, and rejected blobs/metadata are retained only for a bounded audit window before janitor cleanup
 - **Media outbox**: record thumbnail/moderation work in the same SQL transaction as the media row; a retrying dispatcher publishes to the queue so a crash between commit and enqueue cannot leave media permanently unprocessed, and a unique outbox deduplication key (`UploadId` + work type) prevents duplicate work rows
 - **Thumbnail worker**: queue delivery is at-least-once, so thumbnail blob paths must be deterministic (`media/{userId}/{dataPointId}/thumbnails/{uploadId}.jpg`) across the producer, worker, and signed-read URL builder; if the thumbnail already exists, treat that as success after verifying/upserting metadata, otherwise create it and then upsert metadata without duplicate side effects
