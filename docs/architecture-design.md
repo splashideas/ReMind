@@ -301,13 +301,13 @@ builder.Services.AddAuthorization(options =>
     options.FallbackPolicy = new AuthorizationPolicyBuilder()
         .RequireAuthenticatedUser()
         .Build();
-    options.AddPolicy("CanViewFriendsOnly", p => p.AddRequirements(new CanViewFriendsOnlyRequirement()));
+    options.AddPolicy("CanViewFollowersOnly", p => p.AddRequirements(new CanViewFollowersOnlyRequirement()));
     options.AddPolicy("CanViewPrivate", p => p.AddRequirements(new CanViewPrivateRequirement()));
     options.AddPolicy("CanModerate", p => p.RequireRole("Admin"));
 });
 ```
 
-JWT validation alone is not enough: register authorization with a **fallback authenticated policy** so endpoints are not anonymously callable by default, and call `app.UseAuthentication();` plus `app.UseAuthorization();` before mapping endpoints/controllers so the fallback policy is enforced. Apply explicit endpoint policies for visibility decisions (`CanViewFriendsOnly` / `CanViewPrivate`, backed by resource-based authorization handlers that evaluate the caller against the target author/chain) and a separate admin-role policy for moderation routes (`CanModerate`, which is intentionally admin-only in this design). Map the stable caller identity (`iss` + `oid`, or another explicitly linked provider key when `oid` is unavailable) to `Users.UserId` inside the API boundary; do not trust client-supplied user IDs.
+JWT validation alone is not enough: register authorization with a **fallback authenticated policy** so endpoints are not anonymously callable by default, and call `app.UseAuthentication();` plus `app.UseAuthorization();` before mapping endpoints/controllers so the fallback policy is enforced. Apply explicit endpoint policies for visibility decisions (`CanViewFollowersOnly` / `CanViewPrivate`, backed by resource-based authorization handlers that evaluate the caller against the target author/chain) and a separate admin-role policy for moderation routes (`CanModerate`, which is intentionally admin-only in this design). Map the stable caller identity (`iss` + `oid`, or another explicitly linked provider key when `oid` is unavailable) to `Users.UserId` inside the API boundary; do not trust client-supplied user IDs.
 
 ### Authorization Model
 
@@ -481,7 +481,7 @@ This section is the product contract for create/search flows on web and mobile.
 3. **Historical date/time**
    - Date-time picker allows past `eventDate` values (`DATETIMEOFFSET`); validation rejects impossible calendar values but not “old” dates.
 4. **Visibility**
-   - Explicit control: Public / Friends-only / Private (maps to `Visibility` tinyint).
+   - Explicit control: Public / Followers-only / Private (maps to `Visibility` tinyint).
 5. **Tags**
    - Multi-select from predetermined system tags plus typeahead to add custom tags (multiple allowed).
 6. **Media (optional)**
