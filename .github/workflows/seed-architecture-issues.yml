@@ -1,0 +1,32 @@
+name: seed-architecture-issues
+
+# Creates GitHub issues/labels from docs-derived definitions in
+# .github/architecture-issues/. Idempotent by issue title.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - copilot/create-issues-for-architecture
+    paths:
+      - '.github/architecture-issues/**'
+      - '.github/workflows/seed-architecture-issues.yml'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Seed labels and architecture issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq
+          chmod +x .github/architecture-issues/seed-issues.sh
+          .github/architecture-issues/seed-issues.sh
