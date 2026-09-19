@@ -79,7 +79,7 @@ CREATE TABLE dbo.DataPoints (
     Location        GEOGRAPHY NOT NULL,
     CreatedUtc      DATETIME2(7) NOT NULL DEFAULT SYSUTCDATETIME(),
     UpdatedUtc      DATETIME2(7) NULL,
-    Visibility      TINYINT NOT NULL DEFAULT 0,  -- 0=Public, 1=FriendsOnly, 2=Private
+    Visibility      TINYINT NOT NULL DEFAULT 0,  -- 0=Public, 1=FollowersOnly, 2=Private
     IsDeleted       BIT NOT NULL DEFAULT 0,
     CONSTRAINT CK_DataPoints_Location_SRID CHECK (Location.STSrid = 4326),
     CONSTRAINT CK_DataPoints_Visibility CHECK (Visibility IN (0, 1, 2)),
@@ -236,7 +236,7 @@ var nearby = await db.DataPoints
     .Where(x =>
         x.DataPoint.Visibility == Visibility.Public
         || x.DataPoint.UserId == currentUserId
-        || (x.DataPoint.Visibility == Visibility.FriendsOnly
+        || (x.DataPoint.Visibility == Visibility.FollowersOnly
             && db.Follows.Any(f =>
                 f.FollowerId == currentUserId
                 && f.FolloweeId == x.DataPoint.UserId)))
@@ -314,7 +314,7 @@ JWT validation alone is not enough: register authorization with a **fallback aut
 | Action | Rule |
 |---|---|
 | View public posts | Any authenticated user |
-| View friends-only posts | Follower of the author |
+| View followers-only posts | Follower of the author |
 | View private posts | Author only |
 | Create post | Any authenticated user (GPS/location consent recorded when using device GPS) |
 | Join an existing chain | Any authenticated user who can view at least one proposed chain node |
