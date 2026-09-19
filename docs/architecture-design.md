@@ -131,13 +131,14 @@ CREATE TABLE dbo.DataPointTags (
 
 ### Supporting Tables
 
-- **Users**: profile info, persisted external identity pair (`Issuer`, `ExternalSubject`) mapped from the validated token (`iss` + `oid`, or another explicitly linked provider subject when `oid` is unavailable), display name, avatar blob path, bio; user erasure stays asynchronous and only deletes or scrubs the `Users` row after dependent SQL rows/blob artifacts are removed or reassigned in order (consents, follows, reactions, comments, reports, custom-tag ownership, media/data points, then any retained `DataPointChains.CreatedByUserId` / `Tags.CreatedByUserId` references via tombstone reassignment)
+- **Users**: profile info, persisted external identity pair (`Issuer`, `ExternalSubject`) mapped from the validated token (`iss` + `oid`, or another explicitly linked provider subject when `oid` is unavailable), display name, avatar blob path, bio; user erasure stays asynchronous and only deletes or scrubs the `Users` row after dependent SQL rows/blob artifacts are removed or reassigned in order (consents, follows, reactions, comments, reports, custom-tag ownership, media/data points, then any retained `DataPointChains.CreatedByUserId` / `Tags.CreatedByUserId` references reassigned to a non-authenticating tombstone user row such as `Deleted User`)
 - **UserConsents**: auditable GPS/location consent grants and revocations (`Purpose`, `PolicyVersion`, `Granted`, timestamps) enforced server-side for GPS-assisted operations
 - **GpsFixes**: short-lived server-issued handles that bind a consent-validated GPS coordinate fix to the current user (`GpsFixId`, `UserId`, `Location`, `CapturedUtc`, `AccuracyMeters`, `ExpiresUtc`); create/search flows reference `gpsFixId` instead of trusting a client-supplied `"source": "Gps"` flag, expired rows are purged by a scheduled janitor on a short cadence, and any still-present fixes are deleted during user erasure
 - **DataPointChains**: logical timeline grouping related events at/near a place; membership is via `DataPoints.ChainId`
 - **Tags** / **DataPointTags**: many-to-many labels; `IsSystem = 1` rows are the predetermined catalog (seeded), custom tags are user-created with unique normalized names
-- **Media**: `MediaId`, `DataPointId`, `OwnerUserId`, `UploadId`, `BlobPath`, `ThumbnailPath`, `MediaType` (Photo/Video), `Status` (`PendingUpload` / `Quarantined` / `Processing` / `PendingModeration` / `Ready` / `Rejected`), `UploadExpiresUtc`, `SortOrder`; unique constraints on `UploadId` and (`DataPointId`, `BlobPath`); issuing an upload URL creates or refreshes the caller-owned pending reservation for the parent data point, an expiry reaper deletes abandoned pending uploads/blobs, and only `Ready` media is returned on read paths
+- **Media**: `MediaId`, `DataPointId`, `OwnerUserId`, `UploadId`, `BlobPath`, `ThumbnailPath`, `MediaType` (Photo/Video), `Status` (`PendingUpload` / `Quarantined` / `Processing` / `PendingModeration` / `Ready` / `Rejected`), `ModerationApprovedUtc`, `ThumbnailReadyUtc`, `UploadExpiresUtc`, `SortOrder`; unique constraints on `UploadId` and (`DataPointId`, `BlobPath`); issuing an upload URL creates or refreshes the caller-owned pending reservation for the parent data point, an expiry reaper deletes abandoned pending uploads/blobs, moderation/thumbnail gates are recorded separately, and only an idempotent finalization step may promote a row to `Ready` once both gates are satisfied
 - **OutboxMessages**: transactional outbox rows written in the same SQL transaction as media state changes (`OutboxId`, `Type`, `DedupKey`, `Payload`, `CreatedUtc`, `ProcessedUtc`, `Attempts`) with a unique `DedupKey` per upload/work type so queue publication is durable, retryable, and idempotent
+- **UserExportRequests** / **UserErasureRequests**: durable per-user async-job records (`RequestId`, `UserId`, `Status`, `RequestedUtc`, `StartedUtc`, `CompletedUtc`, `FailureCode`, `AuditJson`, optional `DownloadBlobPath` for exports) that own the documented request/status endpoints and enforce caller-scoped reads, retries, and auditable completion
 - **Comments**: `CommentId`, `DataPointId`, `UserId`, `Text`, `CreatedUtc`, nullable `ParentCommentId` (threading); writes must enforce that any parent comment belongs to the same `DataPointId` (for example via a composite `(CommentId, DataPointId)` relationship or equivalent transactional validation), and parent-comment deletes use `ON DELETE SET NULL` plus tombstone/anonymize the erased parent before any optional hard delete so other users' replies remain intact
 - **Reactions**: `ReactionId`, `DataPointId`, `UserId`, `ReactionType` (Like, Love, etc.); unique constraint on (`DataPointId`, `UserId`) means each user has exactly one current reaction per data point and a new reaction replaces the prior value
 - **Follows**: `FollowerId`, `FolloweeId`, `CreatedUtc`; unique constraint on (`FollowerId`, `FolloweeId`)
@@ -333,12 +334,12 @@ GET    /api/datapoints/nearby           # Proximity search around explicit map-s
 GET    /api/datapoints/nearby/gps       # Proximity search around a previously consent-validated gpsFixId; same opaque route-specific cursor/pageSize contract as /nearby and the cursor is rejected if reused with a different fix, radius, or route
 GET    /api/datapoints/in-bounds        # Map viewport query (north/south/east/west, zoom, mode=clusters|points, viewportToken, cursor, pageSize default 200 max 500); same visibility rules; cluster pages use a stable cluster cursor, point pages use a stable leaf-point cursor, and any viewport/mode change invalidates the prior cursor
 GET    /api/datapoints/search/place     # Geocode address/city/state/country via Azure Maps, then return the first bounded nearby/in-bounds result page plus suggested map bounds and continuation cursor
-GET    /api/datapoints/{id}             # Detail + Ready media + tags + chain summary (neighbor counts / adjacent timeline cursors)
+GET    /api/datapoints/{id}             # Detail + Ready media + tags + visibility-filtered chain summary (only caller-visible neighbor counts / adjacent timeline cursors)
 PUT    /api/datapoints/{id}             # Update own data point (including visibility, eventDate, tags, optional chain relink within rules)
 DELETE /api/datapoints/{id}             # Soft-delete own data point
 
-GET    /api/datapoints/chain-candidates # Given explicit map-selected lat/lng + associationRadiusMeters, list joinable chains and nearby standalone points the caller can see
-GET    /api/datapoints/chain-candidates/gps # Same lookup around a previously consent-validated gpsFixId; never accept raw device GPS coordinates on this route
+GET    /api/datapoints/chain-candidates # Given explicit map-selected lat/lng + associationRadiusMeters, list joinable chains and nearby standalone points the caller can see (opaque cursor + pageSize default 25 max 100)
+GET    /api/datapoints/chain-candidates/gps # Same lookup around a previously consent-validated gpsFixId with the same opaque cursor/pageSize contract; never accept raw device GPS coordinates on this route
 GET    /api/chains/{chainId}/timeline   # Chain events ordered by EventDate DESC, DataPointId DESC; cursor = (eventDate, dataPointId) and the seek predicate is < on that descending tuple; includes detail payload suitable for scrubbing a timeline
 POST   /api/chains                      # Explicitly create an empty/titled chain (optional; only the creator may add the first node before any visible-node proximity check exists)
 POST   /api/chains/{chainId}/datapoints # Add a new data point into an existing chain; request must include exactly one of mapLocation or gpsFixId and still satisfy association radius vs some visible node, except for the creator-only first-node add to an empty chain
@@ -359,9 +360,9 @@ POST   /api/users/me/gps-fixes          # Bind a freshly captured device GPS fix
 POST   /api/users/me/consents           # Record location/GPS consent (purpose, policyVersion, granted, client timestamp)
 GET    /api/users/me/consents           # Current consent state used to gate GPS-assisted create/search
 POST   /api/users/me/export-requests    # Request a full user-data export job
-GET    /api/users/me/export-requests/{id} # Check export status and download when ready
+GET    /api/users/me/export-requests/{id} # Check the durable export-request state machine and download when ready
 POST   /api/users/me/erasure-requests   # Request async user-data erasure across SQL, blobs, thumbnails, and CDN caches
-GET    /api/users/me/erasure-requests/{id} # Check erasure status until auditable completion
+GET    /api/users/me/erasure-requests/{id} # Check the durable erasure-request state machine until auditable completion
 PUT    /api/users/{id}/follow           # Follow
 DELETE /api/users/{id}/follow           # Unfollow
 
@@ -370,7 +371,7 @@ POST   /api/reports                     # Report content
 GET    /api/moderation/queue            # Admin: moderation queue (CanModerate policy)
 POST   /api/moderation/datapoints/{id}/hide # Admin: hide/tombstone a reported data point and resolve linked open reports idempotently
 POST   /api/moderation/comments/{id}/hide   # Admin: hide/tombstone a reported comment and resolve linked open reports idempotently
-POST   /api/moderation/media/{mediaId}/approve # Admin: idempotently transition PendingModeration media to Ready and publish any finalization work once
+POST   /api/moderation/media/{mediaId}/approve # Admin: idempotently record moderation approval; a separate finalization step promotes media to Ready only after validation + thumbnail success are already complete
 POST   /api/moderation/media/{mediaId}/reject  # Admin: idempotently transition PendingModeration media to Rejected and trigger bounded-retention cleanup
 POST   /api/moderation/reports/{reportId}/dismiss # Admin: dismiss an open report without hiding the target and record the status transition
 ```
@@ -399,14 +400,14 @@ The request intentionally omits any client-declared `location.source` flag: the 
 ### Nearby search request contract (illustrative)
 
 ```http
-GET /api/datapoints/nearby?lat=52.52&lng=13.405&radiusMeters=250&pageSize=25&cursor=eyJtb2RlIjoibWFwIiwiZGlzdGFuY2VNZXRlcnMiOjg3LjQxLCJkYXRhUG9pbnRJZCI6MTIzNDUsImNlbnRlciI6WzUyLjUyLDEzLjQwNV0sInJhZGl1c01ldGVycyI6MjUwLCJwYWdlU2l6ZSI6MjV9
+GET /api/datapoints/nearby?lat=52.52&lng=13.405&radiusMeters=250&pageSize=25&cursor=opaque.signed.shortlived.token
 ```
 
-`/nearby` is for explicit map-selected coordinates. GPS-assisted nearby search uses `GET /api/datapoints/nearby/gps?gpsFixId=...` with a short-lived `gpsFixId`, and redeeming that handle re-checks current GPS consent so revocation blocks later searches even before the handle expires. The continuation cursor is opaque and server-issued; it encodes the route/search mode, the `(distanceMeters, dataPointId)` seek boundary, and the bound inputs (map center or `gpsFixId`, radius, page size), and the API rejects any cursor replayed with different route or bound inputs.
+`/nearby` is for explicit map-selected coordinates. GPS-assisted nearby search uses `GET /api/datapoints/nearby/gps?gpsFixId=...` with a short-lived `gpsFixId`, and redeeming that handle re-checks current GPS consent so revocation blocks later searches even before the handle expires. The continuation cursor is an opaque, server-issued, signed short-lived token (or equivalent authenticated server-stored handle); it binds the route/search mode, the `(distanceMeters, dataPointId)` seek boundary, and the original bound inputs (map center or `gpsFixId`, radius, page size), and the API rejects any cursor that is expired, forged, or replayed with different route or bound inputs.
 
 ### Design Notes
 
-- Pagination is cursor-based (not OFFSET) for large result sets; nearby cursors are opaque, server-issued tokens that bind the route/search mode plus `(distanceMeters, dataPointId)` to the original center/`gpsFixId`, radius, and page size before applying the ascending seek `>`, timeline cursors are `(eventDate, dataPointId)` with `EventDate DESC, DataPointId DESC` and seek `<`, feed cursors are `(createdUtc, dataPointId)` with `CreatedUtc DESC, DataPointId DESC` and seek `<`, comments cursors are `(createdUtc, commentId)` with `CreatedUtc ASC, CommentId ASC` and seek `>`, and empty pages return no continuation cursor
+- Pagination is cursor-based (not OFFSET) for large result sets; nearby and chain-candidate cursors are opaque, signed short-lived tokens (or equivalent authenticated handles) that bind the route/search mode plus the seek boundary to the original center/`gpsFixId`, radius, and page size before applying the next seek, timeline cursors are `(eventDate, dataPointId)` with `EventDate DESC, DataPointId DESC` and seek `<`, feed cursors are `(createdUtc, dataPointId)` with `CreatedUtc DESC, DataPointId DESC` and seek `<`, comments cursors are `(createdUtc, commentId)` with `CreatedUtc ASC, CommentId ASC` and seek `>`, and empty pages return no continuation cursor
 - Reject invalid coordinates/radius/page size/bounds with HTTP 400 before `Point(...)`, `STDistance`, and `Take(...)`
 - Bounding-box pre-filter before `STDistance` for map viewport and place-search result windows; when a viewport crosses the antimeridian (`west > east`), split the longitude predicate into west→180 and -180→east ranges while keeping the same viewport token/cursor contract
 - Place search: Azure Maps Search (or equivalent) geocodes the query string → center/bbox → same visibility-filtered spatial query; response includes `mapBounds` so the client can fit all returned points, plus bounded result items (`pageSize` + `cursor`) and clusters when the viewport is too broad for raw markers
@@ -415,6 +416,7 @@ GET /api/datapoints/nearby?lat=52.52&lng=13.405&radiusMeters=250&pageSize=25&cur
 - API/application-layer rate limiting via `AspNetCoreRateLimit` or gateway quotas; Azure Front Door WAF is complementary edge protection, not a substitute for per-user/per-token throttling
 - All read paths (including `GET /nearby`, `GET /nearby/gps`, `/in-bounds`, and place search) evaluate visibility with the authenticated caller ID resolved from the JWT (not a client-supplied user id) plus follow relationships
 - `/nearby` responses retain the SQL-computed `DistanceMeters` so the server can build the next opaque cursor from `(distance, DataPointId)` without recomputing the boundary client-side
+- Detail and chain-summary responses are visibility-filtered end to end: neighbor counts, adjacent timeline cursors, and chain-candidate summaries are computed only from members the caller may currently view and never reveal hidden/deleted nodes
 - GPS-assisted create/search flows rely on server-issued `gpsFixId` handles, not on a client-declared `"source"` enum, as the enforcement boundary for consent
 - OpenAPI/Swagger for API documentation
 - SignalR hub for real-time map updates (post-MVP)
@@ -434,8 +436,8 @@ Client → API (request upload URL)
         and, only on the first `PendingUpload` → `Processing` / `PendingModeration` transition, inserts exactly one transactional outbox row for successful thumbnail/moderation work keyed by `UploadId` + work type
        → Retrying outbox dispatcher publishes the queue message (at-least-once) until acknowledged
        → Expired `PendingUpload` rows/blobs and bounded-retention `Rejected` artifacts are removed by a janitor that deletes both blob objects and media metadata
-       → Azure Function (queue trigger) generates thumbnail idempotently to the canonical path `media/{userId}/{dataPointId}/thumbnails/{uploadId}.jpg` and creates or updates media thumbnail fields
-       → Media.Status becomes Ready only after validation + thumbnail success + moderation approval; until then it remains non-public
+       → Azure Function (queue trigger) generates thumbnail idempotently to the canonical path `media/{userId}/{dataPointId}/thumbnails/{uploadId}.jpg`, updates media thumbnail fields, and records `ThumbnailReadyUtc`
+       → Media.Status becomes Ready only in a separate idempotent finalization transaction after validation + thumbnail success + moderation approval are all recorded; until then it remains non-public
         (`PendingModeration` or `Rejected` as appropriate), and read APIs / signed URLs only expose Ready media
         for callers allowed to see the parent data point
        → Front Door / signed URLs serve approved thumbnails and media from those canonical paths
@@ -453,7 +455,7 @@ Client → API (request upload URL)
 - **Blob SAS**: mint user-delegation SAS tokens with the API managed identity (no retained storage account keys); uploads are constrained to a single canonical blob path with create + write permissions so chunked `Put Block` / `Put Block List` uploads work, the initial create must use `If-None-Match: *`, and completion validates the reserved blob's ETag/size/hash before any processing or publish step; reserve Key Vault for secrets that cannot use identity-based access
 - **Upload networking**: because web/mobile clients upload directly, the Blob service endpoint must remain publicly reachable for the upload container, but anonymous blob access stays disabled and Blob service CORS is configured in IaC for each allowed SPA origin plus the required `PUT`/preflight headers/methods—never wildcard origins—while SAS scope/TTL still restrict access to the intended blob path
 - **CDN**: Azure Front Door Premium (`azurerm_cdn_frontdoor_*`) for media delivery; the API issues short-lived, visibility-checked read URLs whose query string carries a blob-read SAS for the single canonical object, Front Door forwards that query string to Blob Storage over the selected origin route, and cache TTL never exceeds the SAS expiry so stale authorized objects are not served after revocation
-- **Moderation**: Azure Content Safety or manual review queue for uploaded media while Status remains `PendingModeration` / non-Ready; only moderation-approved media transitions to `Ready`
+- **Moderation**: Azure Content Safety or manual review queue for uploaded media while Status remains `PendingModeration` / non-Ready; admin approval records moderation state, and a finalizer performs the single idempotent transition to `Ready` only after `ModerationApprovedUtc` and `ThumbnailReadyUtc` are both present
 - **Thumbnails**: Azure Function on queue trigger using `SixLabors.ImageSharp` for images and FFmpeg or Azure Video Indexer for MP4/MOV frame thumbnails
 
 ## 7. Data Point User Experience
@@ -540,6 +542,7 @@ This section is the product contract for create/search flows on web and mobile.
 | Resource | Purpose |
 |---|---|
 | `azurerm_storage_account` (media) | User-uploaded photos/videos |
+| `azurerm_storage_queue` (or Service Bus queue/topic) | Durable media-work queue consumed by the outbox dispatcher and thumbnail/moderation workers |
 | `azurerm_role_assignment` on the media storage account | Grant `ReMind.Api` least-privilege SAS issuance roles (`Storage Blob Delegator` plus blob data role needed for existence/metadata checks) and grant the thumbnail worker blob read/write rights |
 | `azurerm_cdn_frontdoor_profile` + endpoint/origin-group/origin/route (Standard/Premium) | Media delivery |
 | `azurerm_cdn_frontdoor_firewall_policy` + `azurerm_cdn_frontdoor_security_policy` | Front Door WAF rules plus association of that WAF policy to the media routes/domains |
@@ -558,7 +561,7 @@ This section is the product contract for create/search flows on web and mobile.
 |---|---|
 | `azurerm_service_plan` | Upgrade from B1 to P1v3 or switch to Container Apps |
 | `azurerm_linux_web_app` | Repurpose for `ReMind.Api`; add a separate Static Web Apps/Storage static website/Front Door origin (or documented external host) for `ReMind.Web`; Key Vault references + VNet integration |
-| `azurerm_linux_function_app` | Keep for thumbnail generation, outbox dispatcher (if not in-process), and background jobs; managed identity + deterministic thumbnail paths |
+| `azurerm_linux_function_app` | Keep for thumbnail generation, outbox dispatcher (if not in-process), and background jobs; managed identity + deterministic thumbnail paths + app settings / trigger bindings that point the workers at the provisioned media-work queue |
 | `azurerm_mssql_database` | Upgrade SKU from Basic to S0+ for spatial index performance |
 | `azurerm_mssql_server` | Disable public network access when the private endpoint is live |
 
@@ -595,8 +598,8 @@ This section is the product contract for create/search flows on web and mobile.
 - **Consent**: `UserConsents` (or equivalent) stores `UserId`, `Purpose` (`LocationGps`), `PolicyVersion`, `Granted`, `RecordedUtc`, `ClientUtc`, `RevokedUtc`. GPS-assisted create/search requires a non-revoked grant for the current policy version, and the server enforces that rule both when minting short-lived `gpsFixId` handles and again whenever one is redeemed (client prompts alone are not sufficient). Map-pin coordinates remain personal data covered by the privacy policy and retention/erasure flows.
 - **GPS fix retention**: `GpsFixes` are transient personal-location records; each handle expires quickly, a scheduled janitor purges expired rows on a short cadence, and the erasure workflow deletes any remaining fixes immediately.
 - Data retention policy: auto-delete posts after N years (configurable)
-- Right to erasure: `POST /api/users/me/erasure-requests` starts an asynchronous, retryable cleanup workflow that (1) stops issuing new signed media URLs, relies on short token TTLs for any already-issued URLs, deletes blobs/thumbnails, and purges Front Door cache entries (with account-wide user-delegation-key revocation reserved for exceptional blast-radius events), (2) tombstones/cancels any queued or yet-to-be-published media work, requires dispatchers/workers to re-read current media/user deletion state before publishing messages or writing thumbnails, and deletes or anonymizes dependent SQL rows in FK-safe order—`GpsFixes`, `UserConsents`, `Follows`, `Reactions`, `Reports`, `Comments`, custom-tag ownership/unused custom tags, the user’s `Media`/`DataPoints`, corresponding `OutboxMessages`, then empty or tombstone-reassigned `DataPointChains` / retained `Tags` ownership—and only then (3) deletes or scrubs the `Users` row; `GET /api/users/me/erasure-requests/{id}` reports auditable completion status
-- Data export: `POST /api/users/me/export-requests` starts a full export job and `GET /api/users/me/export-requests/{id}` returns status plus the authenticated download when ready
+- Right to erasure: `POST /api/users/me/erasure-requests` starts an asynchronous, retryable cleanup workflow recorded in `UserErasureRequests` that (1) stops issuing new signed media URLs, relies on short token TTLs for any already-issued URLs, deletes blobs/thumbnails, and purges Front Door cache entries (with account-wide user-delegation-key revocation reserved for exceptional blast-radius events), (2) tombstones/cancels any queued or yet-to-be-published media work, requires dispatchers/workers to re-read current media/user deletion state before publishing messages or writing thumbnails, and deletes or anonymizes dependent SQL rows in FK-safe order—`GpsFixes`, `UserConsents`, `Follows`, `Reactions`, `Reports`, `Comments`, custom-tag ownership/unused custom tags, the user’s `Media`/`DataPoints`, corresponding `OutboxMessages`, then empty or ownership-reassigned `DataPointChains` / retained `Tags` moved to the non-authenticating tombstone user row—and only then (3) deletes or scrubs the original `Users` row; `GET /api/users/me/erasure-requests/{id}` reports auditable completion status and the durable job state
+- Data export: `POST /api/users/me/export-requests` starts a full export job recorded in `UserExportRequests`, and `GET /api/users/me/export-requests/{id}` returns the durable job state plus the authenticated download when ready
 
 ### Application Security
 
