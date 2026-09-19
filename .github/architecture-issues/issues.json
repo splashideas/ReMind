@@ -165,6 +165,16 @@
     "body": "## Goal\nAdd push notifications after core mobile parity (post-MVP social/mobile polish).\n\n## Scope\n- Azure Notification Hubs (or chosen provider) Terraform/manual setup\n- Device registration API\n- Notification triggers for follow accept, comments, moderation outcomes (define minimal set)\n- Respect privacy/consent where applicable\n\n## Acceptance criteria\n- [ ] End-to-end test on at least one platform (iOS or Android)\n- [ ] Failure paths don’t break core API transactions\n\n## References\n- `docs/architecture-design.md` §9 Post-MVP, §13 Phase 4"
   },
   {
+    "title": "[Phase 4] Moderation automation and polish",
+    "labels": ["architecture", "phase:4", "area:api", "area:devops"],
+    "body": "## Goal\nReduce operator toil and tighten moderation flows after the core social features ship.\n\n## Scope\n- Automate repeatable moderation queue triage/escalation where policy is deterministic\n- Polish moderator workflows, auditing, and runbooks around hide/dismiss/reject actions\n- Ensure automation remains idempotent and does not bypass admin-only controls\n\n## Acceptance criteria\n- [ ] Moderator workflow documents the automated vs. manual decision points\n- [ ] Automation failures degrade to explicit operator action instead of silent drops\n\n## References\n- `docs/architecture-design.md` §9 Moderation, §13 Phase 4"
+  },
+  {
+    "title": "[Phase 4] Performance hardening (caching, CDN, spatial tuning)",
+    "labels": ["architecture", "phase:4", "area:api", "area:data", "area:infra", "area:media"],
+    "body": "## Goal\nImprove post-MVP performance for map/search/media paths without weakening the documented security model.\n\n## Scope\n- Tune nearby/in-bounds spatial query plans and supporting indexes from production findings\n- Add safe caching where responses are explicitly cacheable and visibility rules still hold\n- Finish CDN/front-door polish for eligible media and API delivery paths without caching protected SAS routes\n\n## Acceptance criteria\n- [ ] Benchmark or load-test evidence captures the before/after impact for targeted hotspots\n- [ ] Any new caching rules preserve the documented authorization and no-store requirements for protected media\n\n## References\n- `docs/architecture-design.md` §6 CDN notes, §8 operational bounds, §13 Phase 4"
+  },
+  {
     "title": "[Infra] Media storage, queues, Event Grid, Defender, RBAC",
     "labels": ["architecture", "phase:2", "area:infra", "area:media"],
     "body": "## Goal\nProvision media pipeline Azure resources and least-privilege RBAC.\n\n## Scope\n- Media storage account; disable anonymous access\n- Queue/Service Bus for media work\n- Event Grid system topic + subscriptions for blob create + malware results\n- Defender for Storage enablement (Terraform or runbook if manual)\n- Role assignments: API Storage Blob Delegator + least-privilege data; workers read/write as needed\n- Blob CORS mirror SPA origins for upload methods only\n\n## Acceptance criteria\n- [ ] Terraform plan includes resources/RBAC\n- [ ] Runbook covers Defender if outside TF\n\n## References\n- `docs/architecture-design.md` §6, §10 New Resources, §12 Network Security"

@@ -22,6 +22,7 @@ Issue definitions in this folder are derived from [`docs/architecture-design.md`
 
 ```bash
 # requires gh auth with repo issue permissions
+# defaults to the current checkout's GitHub origin; set GITHUB_REPOSITORY to override
 ./.github/architecture-issues/seed-issues.sh
 ```
 

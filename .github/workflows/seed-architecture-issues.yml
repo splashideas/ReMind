@@ -4,10 +4,6 @@ name: seed-architecture-issues
 # .github/architecture-issues/. Idempotent by issue title.
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - '.github/architecture-issues/**'
-      - '.github/workflows/seed-architecture-issues.yml'
   push:
     branches:
       - copilot/create-issues-for-architecture
@@ -19,6 +15,10 @@ on:
 permissions:
   contents: read
   issues: write
+
+concurrency:
+  group: seed-architecture-issues-${{ github.repository }}
+  cancel-in-progress: false
 
 jobs:
   seed:

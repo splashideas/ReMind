@@ -5,7 +5,6 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ISSUE_DIR="${ROOT_DIR}/.github/architecture-issues"
-REPO="${GITHUB_REPOSITORY:-splashideas/ReMind}"
 
 if ! command -v gh >/dev/null 2>&1; then
   echo "gh CLI is required" >&2
@@ -16,6 +15,36 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "jq is required" >&2
   exit 1
 fi
+
+resolve_repo() {
+  if [[ -n "${GITHUB_REPOSITORY:-}" ]]; then
+    printf '%s\n' "${GITHUB_REPOSITORY}"
+    return 0
+  fi
+
+  local remote_url repo
+  remote_url="$(git -C "${ROOT_DIR}" config --get remote.origin.url || true)"
+
+  case "${remote_url}" in
+    git@github.com:*)
+      repo="${remote_url#git@github.com:}"
+      ;;
+    https://github.com/*)
+      repo="${remote_url#https://github.com/}"
+      ;;
+    ssh://git@github.com/*)
+      repo="${remote_url#ssh://git@github.com/}"
+      ;;
+    *)
+      echo "Set GITHUB_REPOSITORY or use a checkout with a GitHub origin remote." >&2
+      return 1
+      ;;
+  esac
+
+  printf '%s\n' "${repo%.git}"
+}
+
+REPO="$(resolve_repo)"
 
 echo "Seeding labels into ${REPO}..."
 while IFS= read -r label; do
@@ -32,7 +61,17 @@ while IFS= read -r label; do
 done < <(jq -c '.[]' "${ISSUE_DIR}/labels.json")
 
 echo "Loading existing open+closed issue titles for idempotency..."
-mapfile -t EXISTING_TITLES < <(gh issue list --repo "${REPO}" --state all --limit 500 --json title --jq '.[].title')
+existing_titles="$(
+  gh api \
+    --paginate \
+    -H "Accept: application/vnd.github+json" \
+    "/repos/${REPO}/issues?state=all&per_page=100" \
+    --jq '.[] | select(.pull_request | not) | .title'
+)"
+EXISTING_TITLES=()
+if [[ -n "${existing_titles}" ]]; then
+  mapfile -t EXISTING_TITLES <<<"${existing_titles}"
+fi
 
 title_exists() {
   local needle="$1"
