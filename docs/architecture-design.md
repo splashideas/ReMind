@@ -301,8 +301,8 @@ builder.Services.AddAuthorization(options =>
     options.FallbackPolicy = new AuthorizationPolicyBuilder()
         .RequireAuthenticatedUser()
         .Build();
-    options.AddPolicy("CanViewFriendsOnly", p => p.RequireAuthenticatedUser());
-    options.AddPolicy("CanViewPrivate", p => p.RequireAuthenticatedUser());
+    options.AddPolicy("CanViewFriendsOnly", p => p.AddRequirements(new CanViewFriendsOnlyRequirement()));
+    options.AddPolicy("CanViewPrivate", p => p.AddRequirements(new CanViewPrivateRequirement()));
     options.AddPolicy("CanModerate", p => p.RequireRole("Admin"));
 });
 ```
