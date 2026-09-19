@@ -301,11 +301,13 @@ builder.Services.AddAuthorization(options =>
     options.FallbackPolicy = new AuthorizationPolicyBuilder()
         .RequireAuthenticatedUser()
         .Build();
+    options.AddPolicy("CanViewFriendsOnly", p => p.RequireAuthenticatedUser());
+    options.AddPolicy("CanViewPrivate", p => p.RequireAuthenticatedUser());
     options.AddPolicy("CanModerate", p => p.RequireRole("Admin"));
 });
 ```
 
-JWT validation alone is not enough: register authorization with a **fallback authenticated policy** so endpoints are not anonymously callable by default, and call `app.UseAuthentication();` plus `app.UseAuthorization();` before mapping endpoints/controllers so the fallback policy is enforced. Apply endpoint metadata / policies for visibility checks (resource-based handlers) and admin-only routes (`CanModerate`, which is intentionally admin-only in this design). Map the stable caller identity (`iss` + `oid`, or another explicitly linked provider key when `oid` is unavailable) to `Users.UserId` inside the API boundary; do not trust client-supplied user IDs.
+JWT validation alone is not enough: register authorization with a **fallback authenticated policy** so endpoints are not anonymously callable by default, and call `app.UseAuthentication();` plus `app.UseAuthorization();` before mapping endpoints/controllers so the fallback policy is enforced. Apply explicit endpoint policies for visibility decisions (`CanViewFriendsOnly` / `CanViewPrivate`, backed by resource-based authorization handlers that evaluate the caller against the target author/chain) and a separate admin-role policy for moderation routes (`CanModerate`, which is intentionally admin-only in this design). Map the stable caller identity (`iss` + `oid`, or another explicitly linked provider key when `oid` is unavailable) to `Users.UserId` inside the API boundary; do not trust client-supplied user IDs.
 
 ### Authorization Model
 
