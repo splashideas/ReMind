@@ -315,7 +315,7 @@ JWT validation alone is not enough: register authorization with a **fallback aut
 |---|---|
 | View public posts | Any authenticated user |
 | View followers-only posts | Follower of the author |
-| View private posts | Author only |
+| View private posts | Author only on normal read APIs; moderators use separate admin-only moderation endpoints rather than a visibility bypass on `/api/datapoints/{id}` or `/nearby` |
 | Create post | Any authenticated user (GPS/location consent recorded when using device GPS) |
 | Join an existing chain | Any authenticated user who can view at least one proposed chain node |
 | Create a new chain from nearby standalone points | Any authenticated user may create the chain row, but attaching an existing standalone point requires that the caller own that point or have an explicit owner approval/invitation; the new chain row records that caller as `CreatedByUserId` |
@@ -332,11 +332,11 @@ JWT validation alone is not enough: register authorization with a **fallback aut
 
 ```
 POST   /api/datapoints                  # Create: title, description, eventDate (past allowed), visibility, exactly one of mapLocation or gpsFixId, optional chainId XOR linkToDataPointId, associationRadiusMeters, tagIds[] + customTagNames[]
-GET    /api/datapoints/nearby           # Proximity search around explicit map-selected coordinates (lat [-90,90], lng [-180,180], radiusMeters 1-50000 default 250, opaque route-specific cursor bound to /nearby + the same center/radius/pageSize, pageSize default 25 max 100); visibility via JWT user + follow graph
-GET    /api/datapoints/nearby/gps       # Proximity search around a previously consent-validated gpsFixId; same opaque route-specific cursor/pageSize contract as /nearby and the cursor is rejected if reused with a different fix, radius, or route
+GET    /api/datapoints/nearby           # Proximity search around explicit map-selected coordinates (lat [-90,90], lng [-180,180], radiusMeters 1-50000 default 250, opaque route-specific cursor bound to /nearby + the same center/radius/pageSize, pageSize default 25 max 100); visibility via JWT user + follow graph, with private posts returned only when `DataPoints.UserId == currentUserId`
+GET    /api/datapoints/nearby/gps       # Proximity search around a previously consent-validated gpsFixId; same opaque route-specific cursor/pageSize contract as /nearby, the cursor is rejected if reused with a different fix, radius, or route, and private posts are returned only when `DataPoints.UserId == currentUserId`
 GET    /api/datapoints/in-bounds        # Map viewport query (north/south/east/west, zoom, mode=clusters|points, viewportToken, cursor, pageSize default 200 max 500); same visibility rules; cluster pages use a stable cluster cursor, point pages use a stable leaf-point cursor, and any viewport/mode change invalidates the prior cursor
 GET    /api/datapoints/search/place     # Geocode address/city/state/country via Azure Maps, then return the first bounded nearby/in-bounds result page plus suggested map bounds and continuation cursor
-GET    /api/datapoints/{id}             # Detail + Ready media + tags + visibility-filtered chain summary (only caller-visible neighbor counts / adjacent timeline cursors)
+GET    /api/datapoints/{id}             # Detail + Ready media + tags + visibility-filtered chain summary (only caller-visible neighbor counts / adjacent timeline cursors); private posts return only to the author on this route
 PUT    /api/datapoints/{id}             # Update own data point (including visibility, eventDate, tags, optional chain relink within rules)
 DELETE /api/datapoints/{id}             # Soft-delete own data point
 
@@ -416,7 +416,7 @@ GET /api/datapoints/nearby?lat=52.52&lng=13.405&radiusMeters=250&pageSize=25&cur
 - Viewport refine: client debounces `moveend`/`zoomend`, calls `/in-bounds`, replaces markers + list, and keeps following continuation cursors while the viewport is unchanged; `/in-bounds` explicitly paginates either `mode=clusters` with a stable `(clusterSortKey, clusterId)` cursor or `mode=points` with a stable `(eventDate, dataPointId)` cursor bound to the same `viewportToken`; narrowing the map narrows the query, while low-zoom/world-scale boxes return clusters or a capped page instead of an unbounded raw point list
 - Comments and feed reads are also cursor-bounded so no single request materializes an arbitrarily large thread or followed-user history
 - API/application-layer rate limiting via `AspNetCoreRateLimit` or gateway quotas; Azure Front Door WAF is complementary edge protection, not a substitute for per-user/per-token throttling
-- All read paths (including `GET /nearby`, `GET /nearby/gps`, `/in-bounds`, and place search) evaluate visibility with the authenticated caller ID resolved from the JWT (not a client-supplied user id) plus follow relationships
+- All read paths (including `GET /nearby`, `GET /nearby/gps`, `/in-bounds`, place search, and `GET /api/datapoints/{id}`) evaluate visibility with the authenticated caller ID resolved from the JWT (not a client-supplied user id) plus follow relationships; the private-post branch is an explicit owner-only predicate (`DataPoints.UserId == currentUserId`), and moderators use separate `CanModerate` routes instead of bypassing user-facing visibility checks
 - `/nearby` responses retain the SQL-computed `DistanceMeters` so the server can build the next opaque cursor from `(distance, DataPointId)` without recomputing the boundary client-side
 - Detail and chain-summary responses are visibility-filtered end to end: neighbor counts, adjacent timeline cursors, and chain-candidate summaries are computed only from members the caller may currently view and never reveal hidden/deleted nodes
 - GPS-assisted create/search flows rely on server-issued `gpsFixId` handles, not on a client-declared `"source"` enum, as the enforcement boundary for consent
