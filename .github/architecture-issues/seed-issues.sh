@@ -46,17 +46,32 @@ resolve_repo() {
 
 REPO="$(resolve_repo)"
 
+echo "Loading existing labels for idempotency..."
+mapfile -t EXISTING_LABELS < <(gh label list --repo "${REPO}" --limit 200 --json name --jq '.[].name')
+
+label_exists() {
+  local needle="$1"
+  local label
+  for label in "${EXISTING_LABELS[@]:-}"; do
+    if [[ "${label}" == "${needle}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 echo "Seeding labels into ${REPO}..."
 while IFS= read -r label; do
   name="$(jq -r '.name' <<<"${label}")"
   color="$(jq -r '.color' <<<"${label}")"
   description="$(jq -r '.description' <<<"${label}")"
-  if gh label list --repo "${REPO}" --limit 200 --json name --jq '.[].name' | grep -Fxq "${name}"; then
+  if label_exists "${name}"; then
     gh label edit "${name}" --repo "${REPO}" --color "${color}" --description "${description}" >/dev/null
     echo "  updated label: ${name}"
   else
     gh label create "${name}" --repo "${REPO}" --color "${color}" --description "${description}" >/dev/null
     echo "  created label: ${name}"
+    EXISTING_LABELS+=("${name}")
   fi
 done < <(jq -c '.[]' "${ISSUE_DIR}/labels.json")
 
