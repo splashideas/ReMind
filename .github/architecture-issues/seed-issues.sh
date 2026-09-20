@@ -111,13 +111,18 @@ title_exists() {
 
 remote_title_exists() {
   local needle="$1"
-  gh issue list \
-    --repo "${REPO}" \
-    --state all \
-    --limit 100 \
-    --search "\"${needle}\" in:title" \
-    --json title \
-    | jq -e --arg needle "${needle}" '.[] | select(.title == $needle)' >/dev/null
+  gh api \
+    --paginate \
+    -H "Accept: application/vnd.github+json" \
+    search/issues \
+    -f q="repo:${REPO} is:issue in:title \"${needle}\"" \
+    -F per_page=100 \
+    --jq '.items[].title' \
+    | jq -e --raw-input --slurp --arg needle "${needle}" '
+        split("\n")
+        | map(select(. != ""))
+        | any(. == $needle)
+      ' >/dev/null
 }
 
 created=0
