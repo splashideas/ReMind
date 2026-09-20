@@ -15,7 +15,7 @@ Issue definitions in this folder are derived from [`docs/architecture-design.md`
 ### Option A — workflow (recommended)
 
 1. Ensure `.github/workflows/seed-architecture-issues.yml` is present.
-2. Run **Actions → seed-architecture-issues → Run workflow**, or push changes under this folder to `copilot/create-issues-for-architecture` or `main`.
+2. Run **Actions → seed-architecture-issues → Run workflow**, or push changes under this folder to `main`.
 3. The job uses `GITHUB_TOKEN` with `issues: write` and skips titles that already exist.
 
 ### Option B — local CLI
