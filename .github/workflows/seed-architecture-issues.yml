@@ -10,6 +10,7 @@ on:
     paths:
       - '.github/architecture-issues/**'
       - '.github/workflows/seed-architecture-issues.yml'
+      - 'docs/architecture-design.md'
 
 permissions:
   contents: read

@@ -131,7 +131,7 @@ while :; do
         '
     fi
   )"
-  page_titles="$(jq -r '.data.repository.issues.nodes[].title' <<<"${issue_page}")"
+  page_titles="$(jq -r '.data.repository.issues.nodes[]?.title' <<<"${issue_page}")"
   if [[ -n "${page_titles}" ]]; then
     mapfile -t current_titles <<<"${page_titles}"
     EXISTING_TITLES+=("${current_titles[@]}")
