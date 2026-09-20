@@ -143,8 +143,8 @@ while :; do
 
   issue_cursor="$(jq -r '.data.repository.issues.pageInfo.endCursor // empty' <<<"${issue_page}")"
   if [[ -z "${issue_cursor}" ]]; then
-    echo "Pagination error: missing endCursor when hasNextPage is true" >&2
-    exit 1
+    echo "Warning: stopping issue pagination because endCursor was missing while hasNextPage was true" >&2
+    break
   fi
 done
 
