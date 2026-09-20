@@ -1,7 +1,7 @@
 name: seed-architecture-issues
 
 # Creates GitHub issues/labels from docs-derived definitions in
-# .github/architecture-issues/. Idempotent by issue title.
+# .github/architecture-issues/. Best-effort create-if-missing by issue title.
 on:
   workflow_dispatch:
   push:

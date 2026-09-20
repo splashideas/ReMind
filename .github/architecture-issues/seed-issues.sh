@@ -109,6 +109,26 @@ title_exists() {
   return 1
 }
 
+remote_title_exists() {
+  local needle="$1"
+  local remote_titles remote_title
+  remote_titles="$(
+    gh api \
+      --paginate \
+      -H "Accept: application/vnd.github+json" \
+      "/repos/${REPO}/issues?state=all&per_page=100" \
+      --jq '.[] | select(.pull_request | not) | .title'
+  )"
+
+  while IFS= read -r remote_title; do
+    if [[ "${remote_title}" == "${needle}" ]]; then
+      return 0
+    fi
+  done <<<"${remote_titles}"
+
+  return 1
+}
+
 created=0
 skipped=0
 
@@ -124,6 +144,13 @@ while IFS= read -r issue; do
   if title_exists "${title}"; then
     echo "  skip (exists): ${title}"
     skipped=$((skipped + 1))
+    continue
+  fi
+
+  if remote_title_exists "${title}"; then
+    echo "  skip (exists after refresh): ${title}"
+    skipped=$((skipped + 1))
+    EXISTING_TITLES+=("${title}")
     continue
   fi
 

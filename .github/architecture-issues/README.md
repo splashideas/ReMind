@@ -8,7 +8,7 @@ Issue definitions in this folder are derived from [`docs/architecture-design.md`
 | --- | --- |
 | `issues.json` | Ordered work items to build the target architecture |
 | `labels.json` | Phase/area labels applied to those issues |
-| `seed-issues.sh` | Idempotent `gh` seeder (create-if-missing by title) |
+| `seed-issues.sh` | Best-effort `gh` seeder (create-if-missing by title, with server re-check before create) |
 
 ## Creating issues in GitHub
 
