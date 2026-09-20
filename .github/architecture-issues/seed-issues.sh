@@ -111,22 +111,13 @@ title_exists() {
 
 remote_title_exists() {
   local needle="$1"
-  local remote_titles remote_title
-  remote_titles="$(
-    gh api \
-      --paginate \
-      -H "Accept: application/vnd.github+json" \
-      "/repos/${REPO}/issues?state=all&per_page=100" \
-      --jq '.[] | select(.pull_request | not) | .title'
-  )"
-
-  while IFS= read -r remote_title; do
-    if [[ "${remote_title}" == "${needle}" ]]; then
-      return 0
-    fi
-  done <<<"${remote_titles}"
-
-  return 1
+  gh issue list \
+    --repo "${REPO}" \
+    --state all \
+    --limit 100 \
+    --search "\"${needle}\" in:title" \
+    --json title \
+    | jq -e --arg needle "${needle}" '.[] | select(.title == $needle)' >/dev/null
 }
 
 created=0
