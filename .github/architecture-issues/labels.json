@@ -1,0 +1,18 @@
+[
+  {"name": "architecture", "color": "5319E7", "description": "Work derived from docs/architecture-design.md"},
+  {"name": "phase:pre-1", "color": "BFD4F2", "description": "Pre-Phase 1: solution and platform refactor"},
+  {"name": "phase:1", "color": "0E8A16", "description": "Phase 1: Foundation"},
+  {"name": "phase:2", "color": "1D76DB", "description": "Phase 2: Core product and media"},
+  {"name": "phase:3", "color": "FBCA04", "description": "Phase 3: Social"},
+  {"name": "phase:4", "color": "D93F0B", "description": "Phase 4: Mobile + polish"},
+  {"name": "area:api", "color": "006B75", "description": "ReMind.Api / backend HTTP"},
+  {"name": "area:web", "color": "0075CA", "description": "ReMind.Web React SPA"},
+  {"name": "area:mobile", "color": "A2EEEF", "description": "ReMind.Mobile React Native"},
+  {"name": "area:data", "color": "C5DEF5", "description": "EF Core, schema, SQL"},
+  {"name": "area:infra", "color": "B60205", "description": "Terraform / Azure infrastructure"},
+  {"name": "area:devops", "color": "E99695", "description": "CI/CD and testing pipelines"},
+  {"name": "area:security", "color": "EE0701", "description": "AuthN/Z, privacy, compliance"},
+  {"name": "area:media", "color": "D4C5F9", "description": "Uploads, blobs, workers, CDN"},
+  {"name": "area:core", "color": "FEF2C0", "description": "Shared contracts and defaults"},
+  {"name": "area:solution", "color": "F9D0C4", "description": "Solution structure and cutover"}
+]

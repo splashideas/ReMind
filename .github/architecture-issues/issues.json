@@ -1,0 +1,207 @@
+[
+  {
+    "title": "[Pre-Phase 1] Scaffold solution structure (Api, Web, Core, Data, Mobile)",
+    "labels": ["architecture", "phase:pre-1", "area:solution"],
+    "body": "## Goal\nScaffold the target solution layout from `docs/architecture-design.md` §1 so the redesign has a stable project boundary.\n\n## Scope\n- Add projects under `src/`:\n  - `ReMind.Api` (ASP.NET Core Web API)\n  - `ReMind.Web` (React SPA shell)\n  - `ReMind.Mobile` (React Native placeholder)\n  - `ReMind.Core` (domain models, DTOs, shared contracts)\n  - `ReMind.Data` (EF Core DbContext, configurations, migrations host)\n- Update `ReMind.sln` to include the new projects\n- Keep existing `ReMind.Frontend` / `ReMind.Functions` HTTP surface only until cutover (do not delete yet)\n- Decide and document package references needed for Phase 1 (JWT, EF Core, NetTopologySuite placeholders OK)\n\n## Acceptance criteria\n- [ ] Solution builds with new empty/stub projects\n- [ ] Layout matches §1 tree\n- [ ] No behavior change to current deployed Razor/Functions save path yet\n- [ ] README notes the target structure and retirement plan\n\n## References\n- `docs/architecture-design.md` §1, §13 Pre-Phase 1"
+  },
+  {
+    "title": "[Pre-Phase 1] Retire ReMind.Database as schema source of truth",
+    "labels": ["architecture", "phase:pre-1", "area:data", "area:devops"],
+    "body": "## Goal\nMake EF Core migrations in `ReMind.Data` the schema source of truth before the first redesign DB deployment.\n\n## Scope\n- Remove `ReMind.Database` / `azure/sql-action` create-if-missing path from deploy and CI **before** first EF-backed deployment\n- Inventory shared/dev/prod environments for existing `dbo.DataPoints` rows (mandatory §3 check)\n- If live rows exist, stop and produce a dedicated data-disposition/migration plan; do not assume greenfield\n- Keep SQL project files only if explicitly retained as reference; they must not deploy\n\n## Acceptance criteria\n- [ ] Deploy/CI no longer applies schema via `ReMind.Database`\n- [ ] Environment inventory result documented in the PR/issue notes\n- [ ] Initial EF migration path is the only remaining schema apply mechanism (even if migration content lands in Phase 1)\n\n## References\n- `docs/architecture-design.md` §1 decisions, §3 Migration Strategy, §11 CI/CD, §13 Pre-Phase 1"
+  },
+  {
+    "title": "[Pre-Phase 1] Wire early CI for .NET + Node (Web/Mobile stubs)",
+    "labels": ["architecture", "phase:pre-1", "area:devops"],
+    "body": "## Goal\nExtend CI so the redesigned solution structure is validated early (dotnet + Node) without waiting for full feature work.\n\n## Scope\n- Update/add workflows to restore/build/test .NET solution including new projects\n- Add Node steps for `ReMind.Web`: `npm ci`, `npm run build`, `npm test` (stub OK)\n- Add React Native validation stubs for `ReMind.Mobile` (TypeScript check / Jest placeholder)\n- Fail CI on format/lint/type errors for touched stacks when tooling is present\n- Keep existing Playwright harness green against current stack until SPA cutover\n\n## Acceptance criteria\n- [ ] PR CI builds new projects\n- [ ] Node web pipeline runs on path changes under `src/ReMind.Web`\n- [ ] Mobile TS/Jest stub job exists (can be continue-on-error only if explicitly temporary and tracked)\n\n## References\n- `docs/architecture-design.md` §11, §13 Pre-Phase 1"
+  },
+  {
+    "title": "[Phase 1] Entra External ID tenant + app registrations (API, SPA, Mobile, Admin role)",
+    "labels": ["architecture", "phase:1", "area:security", "area:infra"],
+    "body": "## Goal\nStand up Microsoft Entra External ID as the identity provider for ReMind clients and API.\n\n## Scope (mostly manual/external — document as runbook)\n- Create Entra External ID tenant (separate from SQL server Entra)\n- Register applications:\n  - API: expose scopes/audience for `ReMind.Api`\n  - React SPA: MSAL.js Authorization Code + PKCE\n  - React Native: MSAL or Expo AuthSession + PKCE\n- Configure social IdPs: Google, Apple, Facebook\n- Define Admin app role/group claim (`roles` contains `Admin`) — no self-service assignment\n- Store non-secret configuration (tenant, client IDs, scopes) for Terraform/appsettings; secrets only in Key Vault where required\n\n## Acceptance criteria\n- [ ] Runbook documents tenant + three app registrations + Admin role\n- [ ] SPA and mobile can obtain tokens against the API audience in a non-prod tenant\n- [ ] Admin role claim format matches §8 default\n\n## References\n- `docs/architecture-design.md` §4, §8 Admin role claim, §10 Manual/External Resources, §13 Phase 1"
+  },
+  {
+    "title": "[Phase 1] EF Core model + initial transactional migration for full §2 schema",
+    "labels": ["architecture", "phase:1", "area:data"],
+    "body": "## Goal\nMaterialize **all** of §2 (core + supporting tables) in `ReMind.Data` via EF Core, with a safe migration strategy.\n\n## Scope\n- Entities/configurations for: Users, AvatarUploads, DataPointChains, DataPoints, Tags, DataPointTags, UserConsents, GpsFixes, ErasedSubjectHashes, UserErasureRequests, UserExportRequests, Media, OutboxMessages, Follows, Comments, Reactions, Reports\n- Constraints, filtered unique indexes, soft-delete query filters on DataPoints/Comments\n- **Initial migration is transactional only** (tables, constraints, non-spatial indexes) — no `CREATE SPATIAL INDEX` here\n- Seed system tags + deploy-time system tombstone user as required by erasure design\n- Geography columns via NetTopologySuite; SRID 4326 checks\n\n## Acceptance criteria\n- [ ] Full §2 column contracts present in model\n- [ ] Initial migration applies cleanly on empty DB and is retry-safe\n- [ ] Soft-delete filters default-on\n- [ ] Unit/integration tests cover model constraints where practical\n\n## References\n- `docs/architecture-design.md` §2, §3, §13 Phase 1"
+  },
+  {
+    "title": "[Phase 1] Dedicated spatial-index migration (nontransactional, retry-safe)",
+    "labels": ["architecture", "phase:1", "area:data"],
+    "body": "## Goal\nAdd `IX_DataPoints_Location` (and any other spatial indexes) in a **subsequent** migration that SQL Server will accept.\n\n## Scope\n- Separate migration whose sole nontransactional command is spatial index DDL via `migrationBuilder.Sql(..., suppressTransaction: true)`\n- Existence guard so replay is safe (`IX_DataPoints_Location` absent check or equivalent)\n- Do not mix unguarded table creates into this migration\n\n## Acceptance criteria\n- [ ] Spatial index exists after migrate\n- [ ] Re-running migration is a no-op / safe\n- [ ] Documented in migration notes why it is split from initial schema\n\n## References\n- `docs/architecture-design.md` §2 spatial index, §3 Migration Strategy, §12 SQL notes"
+  },
+  {
+    "title": "[Phase 1] ReMind.Api foundation: JWT auth, fallback policy, Problem Details, EF+NTS",
+    "labels": ["architecture", "phase:1", "area:api", "area:security"],
+    "body": "## Goal\nStand up `ReMind.Api` as the public HTTP API host with secure defaults from §3–§5.\n\n## Scope\n- ASP.NET Core Web API project on the solution\n- JWT bearer via Microsoft Identity Web (`AzureAd` config) against Entra External ID\n- `FallbackPolicy = RequireAuthenticatedUser`\n- `UseAuthentication` + `UseAuthorization` before endpoint mapping\n- Explicit `AllowAnonymous` only for: `GET /healthz/live`, `GET /api/erasure-requests/{id}` (+ legacy alias)\n- RFC 7807 Problem Details helper with stable `type`/`code` values\n- EF Core + `Microsoft.EntityFrameworkCore.SqlServer.NetTopologySuite` DI\n- OpenAPI/Swagger enabled\n- CORS allow-list of known SPA origins (no `*`)\n- Rate limiting foundation (package or gateway hooks) for later endpoint quotas\n\n## Acceptance criteria\n- [ ] Unauthenticated calls to protected routes return 401\n- [ ] `/healthz/live` is anonymous and does not JIT users\n- [ ] Problem Details content-type on sample 400/401/403/404\n- [ ] DbContext resolves with NTS geography mapping\n\n## References\n- `docs/architecture-design.md` §3–§5, §8, §11–§12, §13 Phase 1"
+  },
+  {
+    "title": "[Phase 1] Caller identity directory + JIT user provisioning with erasure blocklist",
+    "labels": ["architecture", "phase:1", "area:api", "area:security", "area:data"],
+    "body": "## Goal\nResolve internal `Users.UserId` only from validated JWT (`iss` + `oid`/linked subject). Never trust client-supplied user ids.\n\n## Scope\n- User directory service mapping token → `Users` row\n- JIT create on first authenticated request unless blocked\n- Load `SubjectPseudonymKey` versions from Key Vault: current + every version still referenced by `ErasedSubjectHashes`\n- Compute versioned `HMAC-SHA-256` subject hashes; if any match, return 403 `account-closed` and do not provision\n- Do not use plain SHA-256 of subject\n\n## Acceptance criteria\n- [ ] First login creates Users row\n- [ ] Erased subject cannot reprovision (integration test with seeded hash)\n- [ ] No API accepts caller userId from body/query for authZ\n\n## References\n- `docs/architecture-design.md` §2 ErasedSubjectHashes, §3 Caller Identity, §12 erasure"
+  },
+  {
+    "title": "[Phase 1] Opaque cursor infrastructure (Data Protection, caller-bound, TTL)",
+    "labels": ["architecture", "phase:1", "area:api", "area:security"],
+    "body": "## Goal\nProvide shared opaque pagination cursor protect/unprotect used by all visibility-dependent list endpoints.\n\n## Scope\n- ASP.NET Data Protection (`IDataProtector`) or equivalent authenticated handles\n- Payload includes `callerUserId`, route, seek keys, bound query inputs\n- Default TTL 10 minutes (§8)\n- Redeem rejects tampered/expired cursors and `callerUserId` mismatches without leaking which field failed\n- Typed helpers for nearby, chain-candidates, timeline, feed, comments, follow-requests, in-bounds modes\n\n## Acceptance criteria\n- [ ] Unit tests for expire, tamper, caller mismatch, route mismatch\n- [ ] Shared API used by later endpoint issues\n\n## References\n- `docs/architecture-design.md` §3 cursors, §5 Design Notes, §8 cursor TTL"
+  },
+  {
+    "title": "[Phase 1] Scaffold ReMind.Web map shell (auth + Leaflet/Mapbox)",
+    "labels": ["architecture", "phase:1", "area:web"],
+    "body": "## Goal\nCreate the React SPA shell that will replace Razor, with map canvas and MSAL auth wiring.\n\n## Scope\n- React app in `src/ReMind.Web`\n- MSAL.js Authorization Code + PKCE against Entra External ID\n- Map shell using Leaflet or Mapbox\n- Basic routing/layout; empty create/search panels as placeholders\n- Environment config for API base URL and AAD settings\n- Security headers plan for hosting (CSP, nosniff, referrer-policy)\n\n## Acceptance criteria\n- [ ] Local dev can sign in and render a map\n- [ ] Unauthenticated users cannot call protected API from the shell without token attach\n- [ ] Build/test scripts exist for CI\n\n## References\n- `docs/architecture-design.md` §1, §4, §7, §12, §13 Phase 1"
+  },
+  {
+    "title": "[Phase 1/10] Terraform foundation: App Service P1v3 API host, SQL SKU, identities",
+    "labels": ["architecture", "phase:1", "area:infra"],
+    "body": "## Goal\nUpdate IaC toward the target API host and identity baseline (can land incrementally with later infra issues).\n\n## Scope\n- Service plan upgrade path to **P1v3** for `ReMind.Api`\n- Linux Web App repurposed for API; document/separate static host for SPA\n- SQL database SKU S0+ for spatial performance\n- Managed identities for API (and workers later); Key Vault access scaffolding\n- App settings via Key Vault references; no plaintext SQL connection strings when AAD auth is available\n- Anonymous `/healthz/live` ready for Front Door probes (wiring in later FD issue)\n\n## Acceptance criteria\n- [ ] `terraform validate` passes\n- [ ] Plan shows intended host/SKU/identity resources without destroying unrelated state unexpectedly\n- [ ] README deploy notes updated\n\n## References\n- `docs/architecture-design.md` §10 Modified Resources, §13 Phase 1"
+  },
+  {
+    "title": "[Phase 2] Operational defaults configuration module (§8 bounds)",
+    "labels": ["architecture", "phase:2", "area:api", "area:core"],
+    "body": "## Goal\nCentralize §8 numeric bounds/TTLs so API validation, clients, quotas, and janitors agree.\n\n## Scope\n- Strongly typed options for radii, page sizes, media limits, SAS/pending TTLs, cursor TTL, receipt entropy, retention windows, etc.\n- Environment overrides via configuration\n- Shared validators for lat/lng/radius/pageSize\n\n## Acceptance criteria\n- [ ] Defaults match §8 table exactly\n- [ ] Invalid bounds rejected with stable Problem Details codes in shared helpers\n\n## References\n- `docs/architecture-design.md` §8"
+  },
+  {
+    "title": "[Phase 2] Profiles API + avatar upload pipeline (AvatarUploads)",
+    "labels": ["architecture", "phase:2", "area:api", "area:media"],
+    "body": "## Goal\nImplement user profile read/update and caller-scoped avatar init/complete with quota-safe reservations.\n\n## Scope\n- `GET /api/users/{id}` — avatar as short-lived signed read URL only\n- `PUT /api/users/me` — display name/bio only; reject client blob paths\n- `POST /api/users/me/avatar` + `/complete` per §5/§6\n- `AvatarUploads` one-live-reservation invariant, `ClientRequestId` idempotency, `PendingReservedBytes` conditional debit\n- Prefer size-enforcing proxy for avatars (10 MB max)\n- Malware/signature gates; set `Users.AvatarBlobPath` server-side only after clean path\n\n## Acceptance criteria\n- [ ] Concurrent avatar replace cannot double-charge two live reservations\n- [ ] Idempotent init returns same UploadId/SAS without second debit\n- [ ] Client cannot set AvatarBlobPath directly\n\n## References\n- `docs/architecture-design.md` §2 AvatarUploads, §5 user endpoints, §6, §8 avatar max"
+  },
+  {
+    "title": "[Phase 2] Consents + GPS fix mint/redeem APIs",
+    "labels": ["architecture", "phase:2", "area:api", "area:security"],
+    "body": "## Goal\nGate GPS-assisted flows with stored consent and short-lived server `gpsFixId` handles.\n\n## Scope\n- `POST/GET /api/users/me/consents` upsert single current row per (UserId, Purpose, PolicyVersion)\n- `POST /api/users/me/gps-fixes` mints fix only with non-revoked LocationGps consent\n- Every redeem re-checks consent still granted\n- TTL 5 minutes; janitor cadence 1 minute (worker can be separate issue but hooks required)\n- Map-pin flows do not require GPS consent but coordinates remain personal data\n\n## Acceptance criteria\n- [ ] Revoked consent blocks mint and redeem\n- [ ] Expired fixes are not redeemable\n- [ ] No client-declared location.source enum is trusted\n\n## References\n- `docs/architecture-design.md` §2 UserConsents/GpsFixes, §5, §7, §8, §12"
+  },
+  {
+    "title": "[Phase 2] Tags API + system tag seed + attach rules",
+    "labels": ["architecture", "phase:2", "area:api", "area:data"],
+    "body": "## Goal\nImplement tag catalog and author-only attach/detach behavior.\n\n## Scope\n- `GET /api/tags` (system + caller recent custom; optional `q`)\n- `POST /api/tags` idempotent on `NormalizedName`\n- System tags seeded immutable names (`IsSystem=1`)\n- Normalization: trim + case-fold\n- Data-point tag attach on create/update is author-only\n\n## Acceptance criteria\n- [ ] Concurrent custom tag creates return same tag\n- [ ] System tags cannot be renamed via API\n- [ ] Non-author cannot attach tags\n\n## References\n- `docs/architecture-design.md` §2 Tags, §2 Tag Rules, §5"
+  },
+  {
+    "title": "[Phase 2] Data points CRUD with required visibility and ownership rules",
+    "labels": ["architecture", "phase:2", "area:api"],
+    "body": "## Goal\nImplement create/read/update/soft-delete for data points with the §5 contract and visibility matrix.\n\n## Scope\n- `POST /api/datapoints` — title, description≤4000, eventDate, **required visibility**, exactly one of mapLocation|gpsFixId, optional chainId XOR linkToDataPointId, associationRadiusMeters, tags\n- JSON presence validation so omitted visibility does not bind to Public/0\n- `GET /api/datapoints/{id}` visibility-filtered detail + Ready media + tags + chain summary\n- `PUT/DELETE` author-only soft-delete\n- Shared not-found for missing vs forbidden sequential IDs\n- HTML sanitize description\n\n## Acceptance criteria\n- [ ] Omitted visibility → 400 Problem Details\n- [ ] Private only to author on user routes; FollowersOnly needs Accepted follow\n- [ ] Soft-deleted rows hidden by default filters\n\n## References\n- `docs/architecture-design.md` §4 Authorization Model, §5, §7.1, §12"
+  },
+  {
+    "title": "[Phase 2] Chain association, candidates, timeline, and empty-chain first-node safety",
+    "labels": ["architecture", "phase:2", "area:api", "area:data"],
+    "body": "## Goal\nImplement location chains per §2 association rules and §5 chain endpoints.\n\n## Scope\n- `GET /api/datapoints/chain-candidates` + `/gps` with heterogeneous ordering `(minVisibleDistance, candidateKind, stableId)` and caller-bound cursors\n- `GET /api/chains/{chainId}/timeline` EventDate DESC/DataPointId DESC cursor\n- `POST /api/chains` empty/titled chain\n- `POST /api/chains/{chainId}/datapoints` add with radius rules; creator-only first node on empty chain\n- MVP `linkToDataPointId` owner-only standalone merge with conditional claim under concurrency\n- Empty-chain first-node conditional claim so only one concurrent winner bypasses proximity\n- Visibility-filtered labels/counts never reveal hidden members\n\n## Acceptance criteria\n- [ ] Integration tests for concurrent first-node and concurrent linkToDataPointId races\n- [ ] chainId and linkToDataPointId together → 400\n- [ ] Timeline/cursor caller binding enforced\n\n## References\n- `docs/architecture-design.md` §2 Chain Association Rules, §5 chain endpoints, §7"
+  },
+  {
+    "title": "[Phase 2] Nearby + nearby/gps search endpoints",
+    "labels": ["architecture", "phase:2", "area:api", "area:data"],
+    "body": "## Goal\nProximity search with SQL geography distance, visibility predicate, and opaque cursors.\n\n## Scope\n- `GET /api/datapoints/nearby` and `/nearby/gps`\n- Validate lat/lng/radius/pageSize before Point/STDistance\n- Visibility: Public OR owner OR (FollowersOnly AND Accepted follow); private only when owner\n- Keep follow test in SQL via EXISTS (do not materialize followee ids for Contains)\n- Order by distance then DataPointId; retain SQL DistanceMeters on DTO for cursor\n- Caller-bound opaque cursors; reject cross-account replay\n\n## Acceptance criteria\n- [ ] Matches §3 proximity example semantics\n- [ ] Pending follows never unlock FollowersOnly\n- [ ] Integration tests with spatial data\n\n## References\n- `docs/architecture-design.md` §3 Proximity Query Example, §5, §7.2, §8"
+  },
+  {
+    "title": "[Phase 2] Map viewport /in-bounds + place geocode search (Azure Maps)",
+    "labels": ["architecture", "phase:2", "area:api", "area:infra"],
+    "body": "## Goal\nSupport map explore: viewport refine and address/place search.\n\n## Scope\n- `GET /api/datapoints/in-bounds` with north/south/east/west, zoom, mode=clusters|points, viewportToken, cursors, pageSize default 200 max 500\n- Antimeridian split when west>east\n- Cluster vs point cursor contracts bound to caller + viewportToken\n- `GET /api/datapoints/search/place` via Azure Maps geocode → bounds + first page + continuation\n- Bounding-box pre-filter before STDistance\n- Provision/configure Azure Maps account (Terraform or documented external) and Key Vault secret if needed\n\n## Acceptance criteria\n- [ ] Viewport change invalidates prior cursor\n- [ ] Place search returns mapBounds for client fit\n- [ ] Low-zoom returns clusters/capped pages not unbounded points\n\n## References\n- `docs/architecture-design.md` §5, §7.2, §10 Azure Maps"
+  },
+  {
+    "title": "[Phase 2] Media upload init/complete with PendingReservedBytes quota",
+    "labels": ["architecture", "phase:2", "area:api", "area:media"],
+    "body": "## Goal\nAuthor-only media reservation and completion for data-point attachments.\n\n## Scope\n- `POST /api/datapoints/{id}/media` with ClientRequestId + requestedSizeBytes + media type\n- Reserve **per-type max** (photo 50MB / video 500MB) via conditional `PendingReservedBytes` update; refuse on 0-row\n- User-delegation SAS create+write to staging path; TTL ≤ pending expiry (15m / 30m defaults)\n- Idempotent retry returns same reservation without second debit\n- `POST .../media/complete` validates size/signature, seals CanonicalETag, transitions status, outbox row once\n- Counter release only for proxy uploads or expired/revoked write capability; direct-SAS rejects stay charged until expiry\n- Canonical path layout per §6 Decisions\n\n## Acceptance criteria\n- [ ] Quota race tests pass\n- [ ] Completion is idempotent; no duplicate outbox\n- [ ] Read APIs never expose non-Ready media\n\n## References\n- `docs/architecture-design.md` §5 media endpoints, §6, §8"
+  },
+  {
+    "title": "[Phase 2] Media workers: outbox dispatcher, malware scan, thumbnails, cleanup janitors",
+    "labels": ["architecture", "phase:2", "area:media", "area:api"],
+    "body": "## Goal\nBackground processing pipeline so media becomes Ready only after clean scan + thumbnail + moderation gates on sealed CanonicalETag.\n\n## Scope\n- Outbox dispatcher (Function or in-process) with at-least-once publish and DedupKey\n- Defender for Storage (or equivalent) + Event Grid → scan-result worker; bind verdict to CanonicalETag\n- Thumbnail worker idempotent paths `media/{userId}/{dataPointId}/thumbnails/{uploadId}.jpg`\n- Finalization transaction to Ready only when validation + clean malware + thumbnail + moderation approval all match sealed ETag\n- Uncommitted-block inspector ≤60s while write SAS valid; committed oversize reaper; pending expiry janitor; quarantine hold expiry → Rejected+RejectedUtc; rejected retention purge 30d\n- Size-enforcing proxy path for hard caps where required; direct SAS only as bounded cleanup for large video\n\n## Acceptance criteria\n- [ ] Malicious/timeout never parsed by ImageSharp/FFmpeg\n- [ ] Stale scan events for other ETags ignored\n- [ ] Janitors release PendingReservedBytes only after write capability ends on direct-SAS path\n\n## References\n- `docs/architecture-design.md` §6 Architecture/Decisions, §8, §10 queues/Event Grid/Defender"
+  },
+  {
+    "title": "[Phase 2] Admin moderation queue and media Ready gate endpoints",
+    "labels": ["architecture", "phase:2", "area:api", "area:security"],
+    "body": "## Goal\nAdmin-only moderation APIs and policies (`CanModerate`).\n\n## Scope\n- Authorization policies: CanViewFollowersOnly, CanViewPrivate (resource handlers), CanModerate (Admin role)\n- `GET /api/moderation/queue`\n- Hide datapoint/comment endpoints resolving linked open reports idempotently\n- Media approve/reject (reject sets RejectedUtc; Ready only via separate finalization)\n- Report dismiss\n- Moderators do **not** bypass visibility on user-facing GET routes\n\n## Acceptance criteria\n- [ ] Non-admin receives 403 on moderation routes\n- [ ] Approve alone does not publish without other gates\n- [ ] Hide/dismiss idempotent\n\n## References\n- `docs/architecture-design.md` §4, §5 moderation endpoints, §9"
+  },
+  {
+    "title": "[Phase 2] Data export requests (receipt-gated download)",
+    "labels": ["architecture", "phase:2", "area:api", "area:security"],
+    "body": "## Goal\nGDPR/CCPA portable export with one-time download receipt.\n\n## Scope\n- `POST /api/users/me/export-requests` returns one-time ≥256-bit receipt once; store only DownloadReceiptHash\n- Async job builds archive of profile, consents, datapoints, Ready media metadata, comments, reactions, follows\n- `GET /api/users/me/export-requests/{id}` owner job state; signed URL only with receipt header match and unexpired DownloadExpiresUtc (72h)\n- Never authorize by path id or ownership alone; never put receipt in URLs/logs\n- Janitor deletes blob after window; may keep scrubbed audit row\n- Erasure must fence/cancel export jobs (coordinate with erasure issue)\n\n## Acceptance criteria\n- [ ] Receipt required for download URL\n- [ ] Rate limits per §8 where applicable\n- [ ] Integration test covers happy path + missing receipt\n\n## References\n- `docs/architecture-design.md` §5, §8, §12 Data export"
+  },
+  {
+    "title": "[Phase 2] Erasure requests, worker, receipt-only status, ErasedSubjectHashes",
+    "labels": ["architecture", "phase:2", "area:api", "area:security", "area:data"],
+    "body": "## Goal\nAsync right-to-erasure with anti-reprovisioning and receipt-only status after scrub.\n\n## Scope\n- `POST /api/users/me/erasure-requests` authenticated; one-time status receipt; store StatusReceiptHash only\n- Worker ordered cleanup per §12 (fence media/export, delete blobs, FK-safe SQL, tombstone comments, insert ErasedSubjectHashes **before** Users scrub)\n- `GET /api/erasure-requests/{id}` AllowAnonymous + receipt header; constant-time hash compare; ignore JWT for authZ; no JIT\n- Legacy alias supported with same rules\n- Rate limit 30/min per IP + id\n- SubjectPseudonymKey versions remain available while referenced\n\n## Acceptance criteria\n- [ ] After completion, same IdP subject gets 403 account-closed on JIT\n- [ ] Status works without Users row using receipt only\n- [ ] Export archives cannot block Users deletion\n\n## References\n- `docs/architecture-design.md` §3 Caller Identity, §5 erasure routes, §12 erasure workflow, §8"
+  },
+  {
+    "title": "[Phase 2] Retention janitors (GpsFixes, media rejected, data-point 10y)",
+    "labels": ["architecture", "phase:2", "area:api", "area:data"],
+    "body": "## Goal\nScheduled cleanup workers for operational and privacy retention defaults.\n\n## Scope\n- GpsFixes expiry purge (1 minute cadence)\n- Media/Avatar rejected retention 30 days from RejectedUtc then hard-delete\n- Quarantine manual-hold max 7 days → Rejected (not direct delete)\n- Data-point retention 10 years from CreatedUtc (+30 day grace); purge or irreversible anonymize; soft-delete not terminal\n- Document schedules alongside media janitors\n\n## Acceptance criteria\n- [ ] Workers are idempotent and safe to re-run\n- [ ] Anchors use CreatedUtc not EventDate/UpdatedUtc for datapoint retention\n\n## References\n- `docs/architecture-design.md` §8, §12 Data retention / GPS retention"
+  },
+  {
+    "title": "[Phase 2] React SPA create UX (map pin, GPS, tags, visibility, chains)",
+    "labels": ["architecture", "phase:2", "area:web"],
+    "body": "## Goal\nProduct create flow on the map per §7.1.\n\n## Scope\n- Drop pin or use device GPS (GPS path uses consent + gpsFixId APIs)\n- Historical eventDate picker, required visibility control\n- Tag picker (system + custom)\n- Association radius control + chain candidate panel + link/create chain\n- Client responsibilities: debounce, token attach, error Problem Details handling\n- Playwright coverage for create happy path after API ready\n\n## Acceptance criteria\n- [ ] Cannot submit without visibility\n- [ ] GPS path blocked without consent\n- [ ] Chain candidate selection maps to chainId or linkToDataPointId correctly\n\n## References\n- `docs/architecture-design.md` §7.1, §7.3, §11 Playwright"
+  },
+  {
+    "title": "[Phase 2] React SPA search/explore UX (nearby, place, in-bounds, timeline)",
+    "labels": ["architecture", "phase:2", "area:web"],
+    "body": "## Goal\nMap+list explore experience per §7.2.\n\n## Scope\n- Nearby search controls; place/address search\n- Viewport refine on moveend/zoomend debounced → `/in-bounds`\n- Marker + list sync; cluster mode at low zoom\n- Detail drawer + chain timeline scrubber\n- Cursor continuation while viewport unchanged\n- Playwright flows for search/timeline\n\n## Acceptance criteria\n- [ ] Map bounds fit place results via mapBounds\n- [ ] Continuation does not leak across users (token bound server-side; client just stores cursor)\n- [ ] Private/followers-only respect server filtering (UI doesn’t special-case leak)\n\n## References\n- `docs/architecture-design.md` §7.2–7.3, §5 Design Notes, §11"
+  },
+  {
+    "title": "[Phase 3] Follow request/accept/reject/unfollow + Accepted-only visibility",
+    "labels": ["architecture", "phase:3", "area:api", "area:web"],
+    "body": "## Goal\nSocial graph MVP with pending requests and Accepted-only unlock of FollowersOnly content.\n\n## Scope\n- `PUT/DELETE /api/users/{id}/follow`\n- `GET /api/users/me/follow-requests` cursor pagination\n- accept/reject endpoints\n- Reject self-follow\n- Web UI for follow buttons and inbound request inbox\n- All visibility/feed queries use Status=Accepted only\n\n## Acceptance criteria\n- [ ] Pending never grants FollowersOnly\n- [ ] Self-follow 400\n- [ ] Follow-requests list never unbounded\n\n## References\n- `docs/architecture-design.md` §2 Follows, §4, §5, §9 MVP"
+  },
+  {
+    "title": "[Phase 3] Comments and reactions (visibility-gated)",
+    "labels": ["architecture", "phase:3", "area:api", "area:web"],
+    "body": "## Goal\nEnable discussion and reactions on visible data points.\n\n## Scope\n- `POST/GET /api/datapoints/{id}/comments` oldest-first cursor (createdUtc, commentId)\n- Optional single-level parent threading with same-DataPointId enforcement\n- Soft-delete filter on comments\n- `POST/DELETE /api/datapoints/{id}/reactions` one reaction per user replace semantics\n- Web UI thread + like control\n- Sanitize comment HTML/text\n\n## Acceptance criteria\n- [ ] Cannot comment/react on non-visible posts (shared not-found)\n- [ ] Cursor bounds enforced\n- [ ] Author erasure tombstones comments on retained posts (coord with erasure)\n\n## References\n- `docs/architecture-design.md` §2 Comments/Reactions, §5, §9"
+  },
+  {
+    "title": "[Phase 3] Activity feed of Accepted followees",
+    "labels": ["architecture", "phase:3", "area:api", "area:web"],
+    "body": "## Goal\nChronological feed of posts from users the caller follows (Accepted only).\n\n## Scope\n- `GET /api/feed` newest-first; cursor binds caller + (createdUtc, dataPointId) seek `<`\n- pageSize default 25 max 100\n- Web feed page/infinite scroll\n\n## Acceptance criteria\n- [ ] Pending followees’ posts excluded\n- [ ] Private posts of followees excluded unless owner (owner isn’t feed case)\n- [ ] Cursor caller binding tests\n\n## References\n- `docs/architecture-design.md` §5 feed, §8, §9"
+  },
+  {
+    "title": "[Phase 3] Content reporting + user-facing report UX",
+    "labels": ["architecture", "phase:3", "area:api", "area:web"],
+    "body": "## Goal\nLet viewers report posts/comments; feed moderation queue.\n\n## Scope\n- `POST /api/reports` with exactly one of dataPointId|commentId\n- Caller must be allowed to view target; missing and non-visible → same not-found\n- Web report dialog\n- Integrates with Phase 2 moderation queue\n\n## Acceptance criteria\n- [ ] CK_Reports_OneTarget enforced\n- [ ] No sequential ID oracle via error differentiation\n\n## References\n- `docs/architecture-design.md` §2 Reports, §5, §9"
+  },
+  {
+    "title": "[Phase 4] React Native parity for create/search/timeline",
+    "labels": ["architecture", "phase:4", "area:mobile"],
+    "body": "## Goal\nShip mobile feature parity for core map create/search/timeline flows.\n\n## Scope\n- RN app auth (MSAL/Expo AuthSession PKCE)\n- Map create with pin/GPS, visibility, tags, chains\n- Nearby/place search and timeline\n- Jest + Detox/Maestro smoke tests\n- CI TypeScript + Jest validation\n\n## Acceptance criteria\n- [ ] Feature parity checklist vs Web for Phase 2 core flows\n- [ ] Tokens use mobile app registration audience/scopes\n\n## References\n- `docs/architecture-design.md` §1 Mobile, §4, §7, §11, §13 Phase 4"
+  },
+  {
+    "title": "[Phase 4] Push notifications (Notification Hubs) — post-MVP polish",
+    "labels": ["architecture", "phase:4", "area:mobile", "area:infra"],
+    "body": "## Goal\nAdd push notifications after core mobile parity (post-MVP social/mobile polish).\n\n## Scope\n- Azure Notification Hubs (or chosen provider) Terraform/manual setup\n- Device registration API\n- Notification triggers for follow accept, comments, moderation outcomes (define minimal set)\n- Respect privacy/consent where applicable\n\n## Acceptance criteria\n- [ ] End-to-end test on at least one platform (iOS or Android)\n- [ ] Failure paths don’t break core API transactions\n\n## References\n- `docs/architecture-design.md` §9 Post-MVP, §13 Phase 4"
+  },
+  {
+    "title": "[Phase 4] Moderation automation and polish",
+    "labels": ["architecture", "phase:4", "area:api", "area:devops"],
+    "body": "## Goal\nReduce operator toil and tighten moderation flows after the core social features ship.\n\n## Scope\n- Automate repeatable moderation queue triage/escalation where policy is deterministic\n- Polish moderator workflows, auditing, and runbooks around hide/dismiss/reject actions\n- Ensure automation remains idempotent and does not bypass admin-only controls\n\n## Acceptance criteria\n- [ ] Moderator workflow documents the automated vs. manual decision points\n- [ ] Automation failures degrade to explicit operator action instead of silent drops\n\n## References\n- `docs/architecture-design.md` §9 Moderation, §13 Phase 4"
+  },
+  {
+    "title": "[Phase 4] Performance hardening (caching, CDN, spatial tuning)",
+    "labels": ["architecture", "phase:4", "area:api", "area:data", "area:infra", "area:media"],
+    "body": "## Goal\nImprove post-MVP performance for map/search/media paths without weakening the documented security model.\n\n## Scope\n- Tune nearby/in-bounds spatial query plans and supporting indexes from production findings\n- Add safe caching where responses are explicitly cacheable and visibility rules still hold\n- Finish CDN/front-door polish for eligible media and API delivery paths without caching protected SAS routes\n\n## Acceptance criteria\n- [ ] Benchmark or load-test evidence captures the before/after impact for targeted hotspots\n- [ ] Any new caching rules preserve the documented authorization and no-store requirements for protected media\n\n## References\n- `docs/architecture-design.md` §6 CDN notes, §8 operational bounds, §13 Phase 4"
+  },
+  {
+    "title": "[Infra] Media storage, queues, Event Grid, Defender, RBAC",
+    "labels": ["architecture", "phase:2", "area:infra", "area:media"],
+    "body": "## Goal\nProvision media pipeline Azure resources and least-privilege RBAC.\n\n## Scope\n- Media storage account; disable anonymous access\n- Queue/Service Bus for media work\n- Event Grid system topic + subscriptions for blob create + malware results\n- Defender for Storage enablement (Terraform or runbook if manual)\n- Role assignments: API Storage Blob Delegator + least-privilege data; workers read/write as needed\n- Blob CORS mirror SPA origins for upload methods only\n\n## Acceptance criteria\n- [ ] Terraform plan includes resources/RBAC\n- [ ] Runbook covers Defender if outside TF\n\n## References\n- `docs/architecture-design.md` §6, §10 New Resources, §12 Network Security"
+  },
+  {
+    "title": "[Infra] Front Door Premium + WAF for API and media; origin lock-down",
+    "labels": ["architecture", "phase:2", "area:infra", "area:security"],
+    "body": "## Goal\nPut API and media behind Azure Front Door with WAF and locked App Service origin.\n\n## Scope\n- FD profile/endpoint/origin groups/routes (Premium)\n- WAF policy + security policy association (OWASP)\n- Origin probe to anonymous `GET /healthz/live`\n- SAS media routes no-store / no cache (or cache key varies on full SAS query if ever enabled)\n- App Service access restriction: require `AzureFrontDoor.Backend` **and** matching `X-Azure-FDID`, then deny\n\n## Acceptance criteria\n- [ ] Direct origin access blocked without FD identity\n- [ ] Header-only checks not relied upon alone\n- [ ] Health probe succeeds\n\n## References\n- `docs/architecture-design.md` §10, §12 Network Security"
+  },
+  {
+    "title": "[Infra] VNet, private SQL endpoint/DNS, Key Vault, App Insights, Log Analytics",
+    "labels": ["architecture", "phase:2", "area:infra", "area:security"],
+    "body": "## Goal\nPrivate network boundary and observability for production posture.\n\n## Scope\n- VNet + subnets\n- SQL private endpoint + private DNS zone + **VNet link** + **DNS zone group**\n- Disable SQL public network access when PE live\n- App Service VNet integration (swift connection)\n- Key Vault for SubjectPseudonymKey versions, Maps key if needed; RBAC\n- Application Insights + Log Analytics\n- Narrow firewall guidance; do not enable “Allow Azure services” casually\n\n## Acceptance criteria\n- [ ] API reaches SQL privately in target env\n- [ ] Name resolution works via zone group/link\n- [ ] Diagnostics flow to Log Analytics\n\n## References\n- `docs/architecture-design.md` §10, §12 Network/App security"
+  },
+  {
+    "title": "[DevOps] EF migration bundle deploy job + SPA/mobile CI + Playwright cutover",
+    "labels": ["architecture", "phase:2", "area:devops"],
+    "body": "## Goal\nAlign CI/CD with redesign hosting and test strategy.\n\n## Scope\n- Build EF migration bundle in CI; apply from VNet-connected/self-hosted or Azure-side job that can reach private SQL\n- Remove remaining Database sql-action path\n- Node SPA build/test; RN validation\n- Retarget Playwright to React SPA create/search/timeline/media flows\n- Fail on dotnet format / ESLint / tsc for touched projects\n- Optional load test harness hooks (k6/Azure Load Testing) for nearby/in-bounds\n\n## Acceptance criteria\n- [ ] Migration apply documented and automated for target env\n- [ ] Playwright green against SPA for core flows\n- [ ] Old Razor E2E retired after cutover\n\n## References\n- `docs/architecture-design.md` §11, §13"
+  },
+  {
+    "title": "[Cutover] Remove Razor Frontend and Functions public HTTP API after SPA/API launch",
+    "labels": ["architecture", "phase:2", "area:solution", "area:devops"],
+    "body": "## Goal\nComplete host cutover: public traffic only on `ReMind.Api` + `ReMind.Web`; Functions remain workers-only if needed.\n\n## Scope\n- Feature-flag/traffic shift plan from Razor+function-key to JWT API + SPA\n- Remove `ReMind.Frontend` and Functions **HTTP triggers** from deploy/CI after parity sign-off\n- Keep thumbnail/outbox/janitor Functions as workers only (not second public API)\n- Update README and infra app settings\n\n## Acceptance criteria\n- [ ] No function-key public API remains\n- [ ] Workers still deploy if required by media pipeline\n- [ ] Rollback notes captured\n\n## References\n- `docs/architecture-design.md` §1 decisions, Current vs Target, §13"
+  },
+  {
+    "title": "[Security] App-layer hardening checklist (CORS, headers, rate limits, receipts, sanitization)",
+    "labels": ["architecture", "phase:2", "area:security", "area:api", "area:web"],
+    "body": "## Goal\nTrack cross-cutting application security controls called out in §12 that span many features.\n\n## Scope\n- CORS allow-list only\n- Security headers on SPA/API responses\n- Rate limits: auth, place search, media/avatar init, erasure/export status\n- Receipt/cursor entropy + constant-time compare + short TTL\n- Input sanitization and upload signature validation\n- Soft-delete filters; shared not-found behavior\n- Secrets only via Key Vault + managed identity; SubjectPseudonymKey rotation rules (referenced versions stay retrievable)\n\n## Acceptance criteria\n- [ ] Checklist verified in staging\n- [ ] Security tests or documented manual probes attached\n\n## References\n- `docs/architecture-design.md` §12 Application Security, §8"
+  }
+]

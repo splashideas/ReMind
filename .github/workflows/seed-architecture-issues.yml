@@ -1,0 +1,41 @@
+name: seed-architecture-issues
+
+# Creates GitHub issues/labels from docs-derived definitions in
+# .github/architecture-issues/. Best-effort create-if-missing by issue title.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/architecture-issues/**'
+      - '.github/workflows/seed-architecture-issues.yml'
+      - 'docs/architecture-design.md'
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: seed-architecture-issues-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify GitHub CLI
+        run: gh --version
+
+      - name: Verify jq
+        run: jq --version
+
+      - name: Seed labels and architecture issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          chmod +x .github/architecture-issues/seed-issues.sh
+          .github/architecture-issues/seed-issues.sh
