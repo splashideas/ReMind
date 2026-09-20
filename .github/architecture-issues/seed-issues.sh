@@ -86,67 +86,17 @@ while IFS= read -r label; do
 done < <(jq -c '.[]' "${ISSUE_DIR}/labels.json")
 
 echo "Loading existing open+closed issue titles for idempotency..."
+existing_titles="$(
+  gh api \
+    --paginate \
+    -H "Accept: application/vnd.github+json" \
+    "/repos/${REPO}/issues?state=all&per_page=100" \
+    --jq '.[] | select(.pull_request | not) | .title'
+)"
 EXISTING_TITLES=()
-issue_cursor=""
-while :; do
-  issue_page="$(
-    if [[ -n "${issue_cursor}" ]]; then
-      gh api graphql \
-        -F owner="${REPO%/*}" \
-        -F name="${REPO#*/}" \
-        -F endCursor="${issue_cursor}" \
-        -f query='
-          query($owner: String!, $name: String!, $endCursor: String) {
-            repository(owner: $owner, name: $name) {
-              issues(first: 100, after: $endCursor, states: [OPEN, CLOSED], orderBy: { field: CREATED_AT, direction: ASC }) {
-                nodes {
-                  title
-                }
-                pageInfo {
-                  hasNextPage
-                  endCursor
-                }
-              }
-            }
-          }
-        '
-    else
-      gh api graphql \
-        -F owner="${REPO%/*}" \
-        -F name="${REPO#*/}" \
-        -f query='
-          query($owner: String!, $name: String!) {
-            repository(owner: $owner, name: $name) {
-              issues(first: 100, states: [OPEN, CLOSED], orderBy: { field: CREATED_AT, direction: ASC }) {
-                nodes {
-                  title
-                }
-                pageInfo {
-                  hasNextPage
-                  endCursor
-                }
-              }
-            }
-          }
-        '
-    fi
-  )"
-  page_titles="$(jq -r '.data.repository.issues.nodes[]?.title' <<<"${issue_page}")"
-  if [[ -n "${page_titles}" ]]; then
-    mapfile -t current_titles <<<"${page_titles}"
-    EXISTING_TITLES+=("${current_titles[@]}")
-  fi
-
-  if [[ "$(jq -r '.data.repository.issues.pageInfo.hasNextPage' <<<"${issue_page}")" != "true" ]]; then
-    break
-  fi
-
-  issue_cursor="$(jq -r '.data.repository.issues.pageInfo.endCursor // empty' <<<"${issue_page}")"
-  if [[ -z "${issue_cursor}" ]]; then
-    echo "Warning: stopping issue pagination because endCursor was missing while hasNextPage was true" >&2
-    break
-  fi
-done
+if [[ -n "${existing_titles}" ]]; then
+  mapfile -t EXISTING_TITLES <<<"${existing_titles}"
+fi
 
 title_exists() {
   local needle="$1"
