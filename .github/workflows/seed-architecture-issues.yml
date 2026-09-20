@@ -6,7 +6,6 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - copilot/create-issues-for-architecture
       - main
     paths:
       - '.github/architecture-issues/**'
