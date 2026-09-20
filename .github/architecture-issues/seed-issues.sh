@@ -141,7 +141,11 @@ while :; do
     break
   fi
 
-  issue_cursor="$(jq -r '.data.repository.issues.pageInfo.endCursor' <<<"${issue_page}")"
+  issue_cursor="$(jq -r '.data.repository.issues.pageInfo.endCursor // empty' <<<"${issue_page}")"
+  if [[ -z "${issue_cursor}" ]]; then
+    echo "Pagination error: missing endCursor when hasNextPage is true" >&2
+    exit 1
+  fi
 done
 
 title_exists() {
