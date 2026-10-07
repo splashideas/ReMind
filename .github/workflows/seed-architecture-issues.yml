@@ -1,7 +1,8 @@
 name: seed-architecture-issues
 
-# Creates GitHub issues/labels from docs-derived definitions in
-# .github/architecture-issues/. Best-effort create-if-missing by issue title.
+# Creates or updates GitHub issues/labels from docs-derived definitions in
+# .github/architecture-issues/. Creates missing titles and syncs open issue bodies.
+# Runs only on main (or a manual dispatch from main). Not on pull requests.
 on:
   workflow_dispatch:
   push:
@@ -29,8 +30,10 @@ jobs:
       - name: Verify GitHub CLI
         run: gh --version
 
-      - name: Verify jq
-        run: jq --version
+      - name: Verify jq and python3
+        run: |
+          jq --version
+          python3 --version
 
       - name: Seed labels and architecture issues
         env:
