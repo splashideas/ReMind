@@ -14,7 +14,21 @@ repo="${GITHUB_REPOSITORY:-}"
 if [[ -z "${repo}" ]]; then
   if git -C "${ISSUE_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     origin="$(git -C "${ISSUE_DIR}" remote get-url origin 2>/dev/null || true)"
-    repo="$(printf '%s\n' "${origin}" | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')"
+    case "${origin}" in
+      git@github.com:*)
+        repo="${origin#git@github.com:}"
+        ;;
+      https://github.com/*)
+        repo="${origin#https://github.com/}"
+        ;;
+      ssh://git@github.com/*)
+        repo="${origin#ssh://git@github.com/}"
+        ;;
+      *)
+        repo=""
+        ;;
+    esac
+    repo="${repo%.git}"
   fi
 fi
 

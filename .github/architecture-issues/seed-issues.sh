@@ -148,7 +148,10 @@ title_exists() {
 
 remote_title_exists() {
   local needle="$1"
+  # -f/-F imply POST unless the method is forced. search/issues is GET-only;
+  # a failed POST inside the caller `if` is treated as "not found" and duplicates the issue.
   gh api \
+    --method GET \
     --paginate \
     -H "Accept: application/vnd.github+json" \
     search/issues \
