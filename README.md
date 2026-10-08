@@ -8,6 +8,8 @@ ReMind is structured as a .NET 10 solution for Azure deployment:
 - `infra/terraform`: Terraform IaC for Azure App Service, Function App, and Azure SQL resources.
 - `.github/workflows`: GitHub Actions workflows for build/validate and deploy.
 
+The target architecture is [`docs/architecture-design.md`](docs/architecture-design.md). Build it from the issue catalog in [`.github/architecture-issues/`](.github/architecture-issues/README.md), not by extending the Razor/Functions MVP ad hoc. Operator steps that cannot be Terraform (state bootstrap, deployment identity, GitHub secrets, External ID, DNS, private SQL migration) are in [`docs/operations-setup.md`](docs/operations-setup.md). Azure resources themselves stay in `infra/terraform`.
+
 ## Infrastructure deploy (Terraform + Azure Storage)
 
 The `deploy-infrastructure` workflow splits **plan** and **apply**:
@@ -16,6 +18,8 @@ The `deploy-infrastructure` workflow splits **plan** and **apply**:
 2. **Apply** re-initializes against the same remote backend, downloads the plan blob, and runs `terraform apply` with that file.
 
 Remote **Terraform state** (`*.tfstate`) lives in one blob container. Saved **plan files** live in a second container (or the same account) so plan and apply can share artifacts across jobs.
+
+The steps below are the current-stack bootstrap. The full operator checklist, including `AZURE_WEBAPP_NAME`, `AZURE_FUNCTIONAPP_NAME`, `TF_VAR_SQL_CONNECTION_SETTING_VALUE`, SQL firewall constraints, and redesign setup that must stay in Terraform, is [`docs/operations-setup.md`](docs/operations-setup.md).
 
 ### 1. Create the Terraform state storage account (one-time)
 

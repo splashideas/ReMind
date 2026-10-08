@@ -14,6 +14,10 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
       - name: Publish frontend
         run: dotnet publish src/ReMind.Frontend/ReMind.Frontend.csproj -c Release -o ./artifacts/frontend
       - name: Publish function

@@ -1,0 +1,324 @@
+# Operations setup
+
+This is the operator runbook for GitHub Actions, Azure connections, and the few Azure steps that cannot be Terraform. It covers the stack that deploys today and the redesign in [`architecture-design.md`](architecture-design.md).
+
+**IaC rule:** every Azure resource in architecture-design §10 (App Service, SQL, storage, queues, Event Grid, Front Door, WAF, Key Vault, VNet, private endpoint, DNS zone, identities, role assignments, Application Insights, Log Analytics, Azure Maps account, Static Web Apps or storage static website) is created in `infra/terraform` with the `hashicorp/azurerm` provider `~> 4.0`. Do not create those resources in the portal. Portal, `az`, and vendor-console steps below are only for bootstrap that Terraform cannot own, or for values Terraform must receive as sensitive inputs.
+
+Secret names below match the workflows. If a workflow and this doc disagree, the workflow file wins and this doc should be updated in the same change.
+
+The current-stack narrative also lives in the repository [`README.md`](../README.md) (state storage, service principal, plan/apply). This page is the checklist operators follow, including gaps that README does not name.
+
+## What must stay manual
+
+| Step | Why it is not Terraform | Where to do it |
+| --- | --- | --- |
+| Terraform state storage account and containers | The backend account cannot be created by the configuration that stores its state there | Azure CLI, once per subscription |
+| GitHub Actions service principal or OIDC app registration in the **subscription** Entra tenant | Chicken-and-egg: Actions must authenticate before Terraform runs | `az ad sp` / Entra portal, then GitHub secrets |
+| GitHub Actions secrets, variables, and environment protection | GitHub settings, not Azure resources | Repository Settings |
+| Entra **External ID** tenant | Separate customer-identity tenant from the SQL server's Entra tenant; tenant creation is not a reliable Terraform resource | Microsoft Entra admin center |
+| Social IdP apps (Google, Apple, Facebook) | Created in those vendors' consoles | Vendor consoles; store resulting secrets in Key Vault via Terraform |
+| Custom-domain registrar records | The domain registrar is outside Azure | Registrar; Front Door custom-domain resource is still Terraform |
+| First environment inventory of `dbo.DataPoints` | A read against existing databases, not a resource | SQL query from an identity that can already connect |
+| Self-hosted runner registration, only if the Azure-side migration job cannot reach private SQL | GitHub runner install is outside Azure | Last resort; prefer an Azure job in the VNet |
+
+Everything else, including app registrations **inside** the External ID tenant once a pipeline identity exists there, Admin app role, redirect URIs, Key Vault secret *containers*, Defender for Storage, and firewall rules, is an implementation task for `infra/terraform`. If a provider resource cannot express one of those, the pull request must say why and link the fallback to this page. Do not leave a silent portal click.
+
+## 1. Current-stack bootstrap
+
+Do this before the first `deploy-infrastructure` run. State and app resources must share one subscription because one `AZURE_CREDENTIALS` value is used for both the backend and the provider.
+
+### 1.1 State storage (one-time, outside Terraform)
+
+```bash
+LOCATION=eastus
+RG_NAME=rg-remind-tfstate
+SA_NAME=stremindtfstate   # globally unique, 3-24 lowercase alphanumeric
+STATE_CONTAINER=tfstate
+PLAN_CONTAINER=tfplans
+
+az group create --name "$RG_NAME" --location "$LOCATION"
+
+az storage account create \
+  --name "$SA_NAME" \
+  --resource-group "$RG_NAME" \
+  --location "$LOCATION" \
+  --sku Standard_LRS \
+  --kind StorageV2 \
+  --min-tls-version TLS1_2 \
+  --allow-blob-public-access false
+
+az storage container-rm create \
+  --storage-account "$SA_NAME" \
+  --resource-group "$RG_NAME" \
+  --name "$STATE_CONTAINER"
+az storage container-rm create \
+  --storage-account "$SA_NAME" \
+  --resource-group "$RG_NAME" \
+  --name "$PLAN_CONTAINER"
+```
+
+Add the 7-day lifecycle rule on `${PLAN_CONTAINER}/plans/` from the README so cancelled plan blobs do not live forever. Do not commit storage account keys. CI uses Azure AD (`use_azuread_auth = true`).
+
+Local init, optional:
+
+```bash
+cd infra/terraform
+cp backend.hcl.example backend.hcl
+# edit names to match the account above; backend.hcl is gitignored
+az login
+terraform init -backend-config=backend.hcl
+```
+
+### 1.2 Deployment identity
+
+The identity needs, on that same subscription:
+
+- **Contributor** (create app resources)
+- **Role Based Access Control Administrator** (Terraform creates `azurerm_role_assignment`; Contributor cannot)
+- **Storage Blob Data Contributor** on the state account (plan/state blobs; no account keys in CI)
+
+```bash
+SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+SP_NAME=sp-remind-github-actions
+
+az ad sp create-for-rbac \
+  --name "$SP_NAME" \
+  --role Contributor \
+  --scopes "/subscriptions/$SUBSCRIPTION_ID" \
+  --sdk-auth
+
+SP_CLIENT_ID="<appId from the JSON>"
+SP_OBJECT_ID=$(az ad sp show --id "$SP_CLIENT_ID" --query id -o tsv)
+
+az role assignment create \
+  --assignee-object-id "$SP_OBJECT_ID" \
+  --assignee-principal-type ServicePrincipal \
+  --role "Role Based Access Control Administrator" \
+  --scope "/subscriptions/$SUBSCRIPTION_ID"
+
+SA_ID=$(az storage account show --name "$SA_NAME" --resource-group "$RG_NAME" --query id -o tsv)
+az role assignment create \
+  --assignee-object-id "$SP_OBJECT_ID" \
+  --assignee-principal-type ServicePrincipal \
+  --role "Storage Blob Data Contributor" \
+  --scope "$SA_ID"
+```
+
+Save the `--sdk-auth` JSON. It is the `AZURE_CREDENTIALS` secret. Do not commit it, and do not paste it into an issue or pull request.
+
+`--sdk-auth` is the shape `deploy-infrastructure` parses today (`clientId`, `clientSecret`, `subscriptionId`, `tenantId`). Prefer replacing that long-lived secret with OIDC (§1.4) once the federated credential exists. Until the workflows are switched, the client secret is still required.
+
+Tighten RBAC Administrator from subscription scope to the app resource group after the first apply has created `TF_VAR_RESOURCE_GROUP_NAME`.
+
+### 1.3 GitHub secrets and variables
+
+Repository → **Settings → Secrets and variables → Actions**.
+
+**Secrets**
+
+| Name | Used by | Value |
+| --- | --- | --- |
+| `AZURE_CREDENTIALS` | `deploy-infrastructure`, `deploy-solution`, `deploy-database` | Full `--sdk-auth` JSON. `azure/login@v2` consumes it. `deploy-infrastructure` also exports `ARM_CLIENT_ID`, `ARM_CLIENT_SECRET`, `ARM_SUBSCRIPTION_ID`, `ARM_TENANT_ID` from the same JSON. |
+| `TF_VAR_SQL_ADMIN_PASSWORD` | `deploy-infrastructure` | SQL admin password. Sensitive Terraform input. Not an app setting. |
+| `TF_VAR_SQL_CONNECTION_SETTING_VALUE` | `deploy-infrastructure` | Current Function App `SqlConnectionString`. Prefer a Key Vault reference over a raw password. The redesign removes plaintext SQL connection strings from app settings; do not add a new copy for `ReMind.Api`. |
+| `AZURE_SQL_CONNECTION_STRING` | `deploy-database` only | Connection string for `azure/sql-action` against `database/ReMind.Database/Schema/Tables/DataPoints.sql`. Retire this secret when that workflow is removed (Pre-Phase 1). |
+
+**Variables**
+
+| Name | Example | Used by |
+| --- | --- | --- |
+| `TF_BACKEND_RESOURCE_GROUP` | `rg-remind-tfstate` | `deploy-infrastructure` init |
+| `TF_BACKEND_STORAGE_ACCOUNT` | `stremindtfstate` | init and plan blob upload |
+| `TF_BACKEND_STATE_CONTAINER` | `tfstate` | state blob container |
+| `TF_BACKEND_STATE_KEY` | `remind/infrastructure.tfstate` | state blob name |
+| `TF_BACKEND_PLAN_CONTAINER` | `tfplans` | saved plan container |
+| `TF_VAR_NAME_PREFIX` | `remind` | resource name prefix |
+| `TF_VAR_RESOURCE_GROUP_NAME` | `rg-remind` | app resource group |
+| `TF_VAR_LOCATION` | `eastus` | region; empty falls back to the Terraform default |
+| `TF_VAR_SQL_ADMIN_LOGIN` | `sqladmin` | SQL admin login |
+| `TF_VAR_SQL_AAD_ADMIN_LOGIN` | `admin@contoso.com` | Entra admin on the **SQL server's** tenant, not the External ID tenant |
+| `TF_VAR_SQL_AAD_ADMIN_OBJECT_ID` | object id GUID | that admin's object id |
+| `AZURE_WEBAPP_NAME` | `remind-frontend` | `deploy-solution`. Must match `${TF_VAR_NAME_PREFIX}-frontend` from `azurerm_linux_web_app.frontend` |
+| `AZURE_FUNCTIONAPP_NAME` | `remind-function` | `deploy-solution`. Must match `${TF_VAR_NAME_PREFIX}-function` |
+
+There is no publish-profile secret. `deploy-solution` signs in with `azure/login` and `AZURE_CREDENTIALS`, then deploys by app name.
+
+### 1.4 Prefer OIDC over the client secret
+
+Do this when you are ready to stop storing `clientSecret` in GitHub. It is still a manual Entra + GitHub step; the Azure resources stay in Terraform.
+
+1. On the app registration from §1.2, add a federated credential:
+   - Entity: branch, or environment if you use §1.5
+   - Organization: `splashideas`
+   - Repository: `ReMind`
+   - Branch subject: `repo:splashideas/ReMind:ref:refs/heads/main`
+   - Environment subject (if used): `repo:splashideas/ReMind:environment:production`
+   - Audience: `api://AzureADTokenExchange`
+2. Add repository variables `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` (not secrets).
+3. Change `azure/login` to `client-id` / `tenant-id` / `subscription-id` and give those jobs `permissions: id-token: write`.
+4. Remove `AZURE_CREDENTIALS` only after a plan/apply succeeds with OIDC. Terraform still needs `ARM_CLIENT_ID`, `ARM_TENANT_ID`, `ARM_SUBSCRIPTION_ID` and `ARM_USE_OIDC=true` instead of `ARM_CLIENT_SECRET`.
+
+`deploy-infrastructure` already sets `id-token: write`, but it still logs in with the client-secret JSON. Do not delete the secret until that workflow is switched.
+
+### 1.5 GitHub Environment protection
+
+Recommended, not required by the workflow files today:
+
+1. Settings → Environments → create `production`.
+2. Add required reviewers on that environment.
+3. When you bind `deploy-infrastructure` apply, `deploy-solution`, and `deploy-database` to `environment: production`, create the environment first or the job will wait or fail.
+
+Do not put production secrets in the repository Actions secrets if you move them to the environment. Keep plan logs from printing SQL passwords (Terraform sensitive variables already redact).
+
+### 1.6 Run the workflows
+
+All three deploy workflows are **workflow_dispatch** only. They do not run on push.
+
+1. **Actions → terraform-validate** runs on pull requests (fmt, `init -backend=false`, validate). No Azure login.
+2. **Actions → deploy-infrastructure → Run workflow** on `main`. Plan writes `plans/remind-<run_id>.tfplan` to the plan container; apply downloads that blob and deletes it after success. Confirm the plan does not destroy the resource group or SQL server before approving apply.
+3. **Actions → deploy-solution → Run workflow** after the web app and function app exist. Publishes `ReMind.Frontend` and `ReMind.Functions`.
+4. **Actions → deploy-database → Run workflow** applies the SQL project script. See the firewall note below. This workflow is retired before the first EF deployment.
+
+`dotnet-build` needs no secrets. It restores, builds, and tests `ReMind.sln` on .NET 10 and installs Playwright Chromium.
+
+### 1.7 SQL reachability for the current schema job
+
+`infra/terraform/main.tf` does not open the SQL firewall. A GitHub-hosted runner cannot connect, and that is intentional.
+
+- Do **not** enable "Allow Azure services" (`0.0.0.0`).
+- Do **not** add `0.0.0.0`–`255.255.255.255`.
+- If you must run `deploy-database` once before the redesign: add a temporary `azurerm_mssql_firewall_rule` whose IP is a variable (operator IP or a self-hosted runner), apply it, run the workflow, then remove the rule in a follow-up apply.
+- After the private endpoint issue, production SQL public network access is disabled and schema apply moves to a VNet-connected job (§8).
+
+## 2. Inventory before any EF deployment
+
+Mandatory before the first EF migration, from architecture-design §3. This is a read, not a portal resource.
+
+For each shared, dev, and prod server that ever ran the Functions app or `deploy-database`:
+
+```sql
+SELECT COUNT(*) AS row_count FROM dbo.DataPoints;
+SELECT TOP (5) DataPointId FROM dbo.DataPoints;
+```
+
+Record the server name, count, and whether `Location` is still `NVARCHAR`. If any environment has rows, stop. Do not apply the EF schema. Write a data-disposition plan (NVARCHAR location mapping, missing `UserId`/`Title`, rollback) and get it reviewed. Greenfield is allowed only when every environment is confirmed empty or never deployed.
+
+Check GitHub secret `AZURE_SQL_CONNECTION_STRING` and variable targets so a forgotten workflow cannot recreate `dbo.DataPoints` after you think the SQL project is retired.
+
+## 3. Entra External ID
+
+Customer sign-in is a **new** External ID tenant. Do not reuse the tenant that administers Azure SQL (`TF_VAR_SQL_AAD_ADMIN_*`).
+
+### 3.1 Create the tenant (manual)
+
+1. Microsoft Entra admin center → **Create a tenant** → **External ID** / customer tenant.
+2. Record tenant id, tenant domain, and the directory where app registrations will live.
+3. Add the GitHub deployment identity (or a dedicated identity) as an application administrator **in that tenant** so later applies can manage apps. If that consent cannot be granted, app registration stays manual and the infra pull request must say so. Default path is Terraform.
+
+### 3.2 App registrations (Terraform after the tenant exists)
+
+Use the `azuread` provider pointed at the External ID tenant, in `infra/terraform`, not the portal:
+
+- **API app**: application id URI and the scope/audience `ReMind.Api` accepts. Expose a scope the SPA and mobile clients request. No client secret in the SPA.
+- **SPA app**: redirect URIs for local dev and the deployed Static Web App / Front Door origin. Platform: single-page application. Auth: authorization code + PKCE only.
+- **Mobile app**: public client, redirect URI for the Expo/MSAL scheme chosen in the mobile scaffold. PKCE. No embedded secret.
+- **Admin app role** named so the token `roles` claim contains `Admin` (architecture-design §8). Assign the role only to operator users in Entra. There is no in-app self-service role grant.
+- Optional API permission grants that need admin consent: grant them with `azuread_service_principal` / admin consent resources if the identity can; otherwise one recorded consent click, then never again.
+
+Non-secret ids (tenant id, client ids, audience) are Terraform outputs or non-secret app settings. Client secrets for confidential API-side credentials, if any, go to Key Vault. The SPA and mobile apps are public clients and must not have secrets.
+
+### 3.3 Social identity providers (manual vendor consoles)
+
+Google Cloud Console, Apple Developer, and Meta for Developers each need an OAuth client whose redirect URI is the External ID tenant's identity-provider callback (shown in the Entra External ID IdP blade). Those consoles are outside Azure.
+
+After you have the client id and secret:
+
+1. Store the secrets as GitHub environment secrets `TF_VAR_google_client_secret`, `TF_VAR_apple_client_secret`, `TF_VAR_facebook_client_secret` (names the Terraform issue should adopt).
+2. Terraform writes them to Key Vault and configures the External ID identity provider. Do not commit the secrets and do not leave the IdP half-configured only in the portal if the provider supports it.
+3. Apple keys expire. Document the rotation date in the issue that lands the IdP; rotation updates the Key Vault secret, not git.
+
+Enable only Google, Apple, and Facebook unless the design changes.
+
+## 4. DNS and custom domains
+
+Front Door endpoints, custom domains, managed certificates, and origin host names are Terraform (`azurerm_cdn_frontdoor_*`).
+
+Manual registrar steps, after Terraform prints the validation token:
+
+1. Create the TXT (or CNAME) record Front Door requires for domain validation.
+2. Point the public API hostname and the media hostname at the Front Door endpoint. Do not point DNS at the App Service default hostname; direct origin access is locked to Front Door.
+3. Wait for the managed certificate. Re-run Terraform if the resource stays in a pending validation state that a second apply must refresh.
+4. Confirm `GET /healthz/live` through the Front Door hostname returns success and does not require a JWT. Confirm the App Service hostname rejects requests that lack both `AzureFrontDoor.Backend` and the matching `X-Azure-FDID`.
+
+## 5. Subject pseudonym key
+
+`ErasedSubjectHashes` uses HMAC-SHA-256 with `SubjectPseudonymKey` from Key Vault. The key must not be in git, SQL, or logs.
+
+Preferred: Terraform creates an Azure Key Vault **oct** key (or a secret whose value Terraform generates and stores only in Key Vault and state). State is already sensitive; restrict state blob access to the deployment identity.
+
+If the pinned `azurerm` provider cannot create an oct key:
+
+1. Locally: `openssl rand -base64 64` (at least 256 bits).
+2. Put the value in GitHub secret `TF_VAR_subject_pseudonym_key_b64`.
+3. Terraform `azurerm_key_vault_secret` writes version 1. Delete the shell history. Do not echo the secret in the workflow log.
+
+Rotation **adds** a version. Do not disable or delete a version that `ErasedSubjectHashes.KeyVersion` still references. A referenced version stays readable for the life of those rows. That rule is application behavior; the manual mistake to avoid is disabling the old version in the portal after rotation.
+
+## 6. Defender for Storage and Azure Maps
+
+**Defender:** enable malware scanning with Terraform (`azurerm_security_center_storage_defender` or the current `azurerm` 4.x equivalent) on the media storage account, plus the Event Grid subscription the design requires. If the subscription has no Defender plan and the provider cannot attach one, record a one-time portal enablement in the infra PR and then import the resource into state. Do not leave scanning as an untracked portal toggle.
+
+**Azure Maps:** create the account in Terraform. If the Maps client requires a key, Terraform stores it in Key Vault and the API reads it with managed identity. Do not put the key in `appsettings` as plaintext, and do not call Maps from the browser with that key. The SPA calls `GET /api/datapoints/search/place` only.
+
+## 7. Redesign host settings (IaC, not portal)
+
+When the foundation Terraform issue lands, these are code, not manual configuration:
+
+- Service plan SKU **P1v3** for `ReMind.Api` (today's plan is `B1`; do not change it until that issue, and do not delete the current frontend app until cutover).
+- SQL database SKU **S0** or higher (today's database is `Basic`).
+- System- or user-assigned identity on the API and worker Function App.
+- App settings are Key Vault references or identity-based (SQL AAD), never a copied connection string.
+- Anonymous `GET /healthz/live` for Front Door probes.
+- Separate static host for `ReMind.Web` (Static Web Apps, or storage static website if Static Web Apps is unavailable). Document the choice in that PR. Front Door origin for the SPA is Terraform.
+- Worker Function App keeps thumbnail, outbox, and janitor triggers only. Remove HTTP triggers at cutover, not before.
+- Blob anonymous access stays disabled. Blob CORS lists SPA origins and upload methods only, in Terraform.
+
+Outputs should include the web app name, function app name, and API hostname so `AZURE_WEBAPP_NAME` / `AZURE_FUNCTIONAPP_NAME` do not have to be hand-copied forever. Until those outputs exist, set the variables from the names in §1.3.
+
+## 8. Private SQL and migration apply
+
+After the VNet issue:
+
+- SQL public network access disabled.
+- Private endpoint, private DNS zone, **VNet link**, and **private DNS zone group** are all Terraform. A private endpoint without the zone group resolves to the public name and the app fails closed.
+- App Service VNet integration is Terraform.
+- GitHub-hosted runners cannot apply EF migrations to that server. Build the migration bundle in GitHub Actions, then apply it from an Azure job that is in the VNet (Container Apps job or equivalent), invoked with the same OIDC identity. A self-hosted runner in the VNet is the fallback and is the only extra manual install (runner registration token from GitHub, not stored in the repo).
+
+Do not re-open the SQL firewall to the internet so a hosted runner can migrate.
+
+## 9. Local developer setup
+
+No production secrets on a laptop.
+
+- .NET 10 SDK (CI uses `10.0.x`).
+- Node.js 22 for `src/ReMind.Web` once that project exists.
+- Azure Functions Core Tools 4, only while Functions workers or the current save path still run.
+- `az login` for local Terraform. Export `ARM_*` or use Azure CLI auth. Copy `backend.hcl.example` to `backend.hcl` (gitignored).
+- External ID tenant ids for local SPA auth come from Terraform outputs or a gitignored `.env`. Do not commit `.env`.
+- `gh auth login` with issue write permission only if you run `.github/architecture-issues/seed-issues.sh` locally.
+
+## 10. Verification
+
+- [ ] `deploy-infrastructure` plan succeeds and apply is reviewed before it runs.
+- [ ] `AZURE_WEBAPP_NAME` and `AZURE_FUNCTIONAPP_NAME` match Terraform names, and `deploy-solution` deploys after `azure/login`.
+- [ ] `deploy-database` is either able to reach SQL through a temporary named firewall rule or is already removed.
+- [ ] No storage account key, SQL password, Maps key, social client secret, or subject pseudonym key is in git.
+- [ ] External ID tenant id is not the SQL server's tenant id.
+- [ ] "Allow Azure services" is off.
+- [ ] After Front Door: public hostname works, App Service direct hostname does not.
+- [ ] After private SQL: API connects, GitHub-hosted runner cannot.
+
+## Related
+
+- Architecture contract: [`architecture-design.md`](architecture-design.md) §10–§13
+- Issue catalog and how to seed or assign work: [`.github/architecture-issues/README.md`](../.github/architecture-issues/README.md)

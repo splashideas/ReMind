@@ -1,0 +1,44 @@
+name: seed-architecture-issues
+
+# Creates or updates GitHub issues/labels from docs-derived definitions in
+# .github/architecture-issues/. Creates missing titles and syncs open issue bodies.
+# Runs only on main (or a manual dispatch from main). Not on pull requests.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/architecture-issues/**'
+      - '.github/workflows/seed-architecture-issues.yml'
+      - 'docs/architecture-design.md'
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: seed-architecture-issues-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify GitHub CLI
+        run: gh --version
+
+      - name: Verify jq and python3
+        run: |
+          jq --version
+          python3 --version
+
+      - name: Seed labels and architecture issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          chmod +x .github/architecture-issues/seed-issues.sh
+          .github/architecture-issues/seed-issues.sh
