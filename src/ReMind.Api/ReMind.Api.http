@@ -1,6 +1,6 @@
 @ReMind.Api_HostAddress = http://localhost:5092
 
-GET {{ReMind.Api_HostAddress}}/weatherforecast/
+GET {{ReMind.Api_HostAddress}}/
 Accept: application/json
 
 ###
