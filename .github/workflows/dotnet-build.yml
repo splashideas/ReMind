@@ -10,6 +10,39 @@ permissions:
   contents: read
 
 jobs:
+  web-build:
+    name: Web CI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/ReMind.Web/package-lock.json
+      - name: Test and build web app
+        working-directory: src/ReMind.Web
+        run: |
+          npm ci
+          npm test
+          npm run build
+          npm run lint
+
+  mobile-check:
+    name: Mobile check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Typecheck and test mobile scaffold
+        working-directory: src/ReMind.Mobile
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+
   dotnet-build:
     runs-on: ubuntu-latest
     steps:
@@ -17,22 +50,6 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-      - name: Test web app
-        working-directory: src/ReMind.Web
-        run: |
-          npm ci
-          npm test
-          npm run build
-          npm run lint
-      - name: Test mobile scaffold
-        working-directory: src/ReMind.Mobile
-        run: |
-          npm ci
-          npm run typecheck
-          npm test
       - name: Install Azure Functions Core Tools
         run: |
           curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | sudo gpg --dearmor -o /usr/share/keyrings/microsoft-products.gpg
