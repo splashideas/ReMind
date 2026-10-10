@@ -1,6 +1,6 @@
 # ReMind
 
-ReMind is structured as a .NET 10 solution for Azure deployment:
+The current deployed solution uses:
 
 - `src/ReMind.Frontend`: ASP.NET Core frontend intended for Azure App Service.
 - `src/ReMind.Functions`: Azure Functions app that receives save events and stores data points in Azure SQL.
@@ -8,7 +8,7 @@ ReMind is structured as a .NET 10 solution for Azure deployment:
 - `infra/terraform`: Terraform IaC for Azure App Service, Function App, and Azure SQL resources.
 - `.github/workflows`: GitHub Actions workflows for build/validate and deploy.
 
-The target architecture is [`docs/architecture-design.md`](docs/architecture-design.md). Build it from the issue catalog in [`.github/architecture-issues/`](.github/architecture-issues/README.md), not by extending the Razor/Functions MVP ad hoc. Operator steps that cannot be Terraform (state bootstrap, deployment identity, GitHub secrets, External ID, DNS, private SQL migration) are in [`docs/operations-setup.md`](docs/operations-setup.md). Azure resources themselves stay in `infra/terraform`.
+The target solution structure and retirement plan are in [architecture-design §1](docs/architecture-design.md#1-solution-restructuring). The new `ReMind.Api`, `ReMind.Web`, `ReMind.Core`, `ReMind.Data`, and `ReMind.Mobile` projects are scaffolds and are not deployed. Razor Pages and the Functions HTTP save path remain until the API/SPA cutover issue. Build toward the target from the issue catalog in [`.github/architecture-issues/`](.github/architecture-issues/README.md), not by extending the MVP ad hoc. Operator steps that cannot be Terraform (state bootstrap, deployment identity, GitHub secrets, External ID, DNS, private SQL migration) are in [`docs/operations-setup.md`](docs/operations-setup.md). Azure resources themselves stay in `infra/terraform`.
 
 ## Infrastructure deploy (Terraform + Azure Storage)
 
