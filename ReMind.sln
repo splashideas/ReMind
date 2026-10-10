@@ -5,6 +5,25 @@ VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{827E0CD3-B72D-47B6-A68D-7590B98EB39B}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "ReMind.Web", "ReMind.Web", "{AE489708-798B-49D0-A750-5EE74F3F975E}"
+	ProjectSection(SolutionItems) = preProject
+		src\ReMind.Web\index.html = src\ReMind.Web\index.html
+		src\ReMind.Web\package.json = src\ReMind.Web\package.json
+		src\ReMind.Web\src\App.tsx = src\ReMind.Web\src\App.tsx
+		src\ReMind.Web\src\main.tsx = src\ReMind.Web\src\main.tsx
+		src\ReMind.Web\src\scaffold.test.ts = src\ReMind.Web\src\scaffold.test.ts
+	EndProjectSection
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "ReMind.Mobile", "ReMind.Mobile", "{0C1FBFE3-1EF2-4F2A-83BD-C53117BB741A}"
+	ProjectSection(SolutionItems) = preProject
+		src\ReMind.Mobile\app.json = src\ReMind.Mobile\app.json
+		src\ReMind.Mobile\App.tsx = src\ReMind.Mobile\App.tsx
+		src\ReMind.Mobile\index.ts = src\ReMind.Mobile\index.ts
+		src\ReMind.Mobile\package.json = src\ReMind.Mobile\package.json
+		src\ReMind.Mobile\scaffold.test.js = src\ReMind.Mobile\scaffold.test.js
+		src\ReMind.Mobile\tsconfig.json = src\ReMind.Mobile\tsconfig.json
+	EndProjectSection
+EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ReMind.Frontend", "src\ReMind.Frontend\ReMind.Frontend.csproj", "{6F35DE5C-D00A-423A-A2E1-67C0199C1EE7}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ReMind.Functions", "src\ReMind.Functions\ReMind.Functions.csproj", "{608E6305-D742-4966-B131-77AE51D953B3}"
@@ -151,6 +170,8 @@ Global
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{6F35DE5C-D00A-423A-A2E1-67C0199C1EE7} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{AE489708-798B-49D0-A750-5EE74F3F975E} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{0C1FBFE3-1EF2-4F2A-83BD-C53117BB741A} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{608E6305-D742-4966-B131-77AE51D953B3} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{9BE5EC60-58A9-4877-BF98-1DBC06FE90E3} = {E0096E63-5207-411F-2649-837654E3C58A}
 		{9A47FEE8-B248-4322-B20A-3FAAAB00611F} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
