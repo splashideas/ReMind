@@ -4,7 +4,7 @@ The current deployed solution uses:
 
 - `src/ReMind.Frontend`: ASP.NET Core frontend intended for Azure App Service.
 - `src/ReMind.Functions`: Azure Functions app that receives save events and stores data points in Azure SQL.
-- `database/ReMind.Database`: .NET database project containing Azure SQL schema deployment scripts.
+- `database/ReMind.Database`: retired SQL project retained in git for reference only; it is not a deployment input. Future schema changes are applied only through EF Core migrations in `ReMind.Data`.
 - `infra/terraform`: Terraform IaC for Azure App Service, Function App, and Azure SQL resources.
 - `.github/workflows`: GitHub Actions workflows for build/validate and deploy.
 

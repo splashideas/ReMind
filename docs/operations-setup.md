@@ -118,10 +118,9 @@ Repository → **Settings → Secrets and variables → Actions**.
 
 | Name | Used by | Value |
 | --- | --- | --- |
-| `AZURE_CREDENTIALS` | `deploy-infrastructure`, `deploy-solution`, `deploy-database` | Full `--sdk-auth` JSON. `azure/login@v2` consumes it. `deploy-infrastructure` also exports `ARM_CLIENT_ID`, `ARM_CLIENT_SECRET`, `ARM_SUBSCRIPTION_ID`, `ARM_TENANT_ID` from the same JSON. |
+| `AZURE_CREDENTIALS` | `deploy-infrastructure`, `deploy-solution` | Full `--sdk-auth` JSON. `azure/login@v2` consumes it. `deploy-infrastructure` also exports `ARM_CLIENT_ID`, `ARM_CLIENT_SECRET`, `ARM_SUBSCRIPTION_ID`, `ARM_TENANT_ID` from the same JSON. |
 | `TF_VAR_SQL_ADMIN_PASSWORD` | `deploy-infrastructure` | SQL admin password. Sensitive Terraform input. Not an app setting. |
 | `TF_VAR_SQL_CONNECTION_SETTING_VALUE` | `deploy-infrastructure` | Current Function App `SqlConnectionString`. Prefer a Key Vault reference over a raw password. The redesign removes plaintext SQL connection strings from app settings; do not add a new copy for `ReMind.Api`. |
-| `AZURE_SQL_CONNECTION_STRING` | `deploy-database` only | Connection string for `azure/sql-action` against `database/ReMind.Database/Schema/Tables/DataPoints.sql`. Retire this secret when that workflow is removed (Pre-Phase 1). |
 
 **Variables**
 
@@ -166,29 +165,25 @@ Recommended, not required by the workflow files today:
 
 1. Settings → Environments → create `production`.
 2. Add required reviewers on that environment.
-3. When you bind `deploy-infrastructure` apply, `deploy-solution`, and `deploy-database` to `environment: production`, create the environment first or the job will wait or fail.
+3. When you bind `deploy-infrastructure` apply and `deploy-solution` to `environment: production`, create the environment first or the job will wait or fail.
 
 Do not put production secrets in the repository Actions secrets if you move them to the environment. Keep plan logs from printing SQL passwords (Terraform sensitive variables already redact).
 
 ### 1.6 Run the workflows
 
-All three deploy workflows are **workflow_dispatch** only. They do not run on push.
+Both deploy workflows are **workflow_dispatch** only. They do not run on push.
 
 1. **Actions → terraform-validate** runs on pull requests (fmt, `init -backend=false`, validate). No Azure login.
 2. **Actions → deploy-infrastructure → Run workflow** on `main`. Plan writes `plans/remind-<run_id>.tfplan` to the plan container; apply downloads that blob and deletes it after success. Confirm the plan does not destroy the resource group or SQL server before approving apply.
 3. **Actions → deploy-solution → Run workflow** after the web app and function app exist. Publishes `ReMind.Frontend` and `ReMind.Functions`.
-4. **Actions → deploy-database → Run workflow** applies the SQL project script. See the firewall note below. This workflow is retired before the first EF deployment.
-
 `dotnet-build` needs no secrets. It restores, builds, and tests `ReMind.sln` on .NET 10 and installs Playwright Chromium.
 
-### 1.7 SQL reachability for the current schema job
+### 1.7 SQL reachability and retired schema job
 
-`infra/terraform/main.tf` does not open the SQL firewall. A GitHub-hosted runner cannot connect, and that is intentional.
+The `deploy-database` workflow has been removed. `ReMind.Database` remains in git for reference only and must not be used to deploy schema; EF Core migrations in `ReMind.Data` are the only future schema apply path. `infra/terraform/main.tf` does not open the SQL firewall.
 
-- Do **not** enable "Allow Azure services" (`0.0.0.0`).
-- Do **not** add `0.0.0.0`–`255.255.255.255`.
-- If you must run `deploy-database` once before the redesign: add a temporary `azurerm_mssql_firewall_rule` whose IP is a variable (operator IP or a self-hosted runner), apply it, run the workflow, then remove the rule in a follow-up apply.
-- After the private endpoint issue, production SQL public network access is disabled and schema apply moves to a VNet-connected job (§8).
+- Do **not** enable "Allow Azure services" (`0.0.0.0`) or add a firewall rule to run a schema deployment from a GitHub-hosted runner.
+- Inventory must use an existing authorized operator path. After the private endpoint issue, production SQL public network access is disabled and migration apply uses a VNet-connected job (§8).
 
 ## 2. Inventory before any EF deployment
 
@@ -199,11 +194,16 @@ For each shared, dev, and prod server that ever ran the Functions app or `deploy
 ```sql
 SELECT COUNT(*) AS row_count FROM dbo.DataPoints;
 SELECT TOP (5) DataPointId FROM dbo.DataPoints;
+SELECT DATA_TYPE
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_SCHEMA = 'dbo'
+  AND TABLE_NAME = 'DataPoints'
+  AND COLUMN_NAME = 'Location';
 ```
 
 Record the server name, count, and whether `Location` is still `NVARCHAR`. If any environment has rows, stop. Do not apply the EF schema. Write a data-disposition plan (NVARCHAR location mapping, missing `UserId`/`Title`, rollback) and get it reviewed. Greenfield is allowed only when every environment is confirmed empty or never deployed.
 
-Check GitHub secret `AZURE_SQL_CONNECTION_STRING` and variable targets so a forgotten workflow cannot recreate `dbo.DataPoints` after you think the SQL project is retired.
+The removed workflow no longer reads `AZURE_SQL_CONNECTION_STRING`; it is not a required GitHub secret. If it remains configured in GitHub, remove it without displaying its value. Check workflow and variable targets so a forgotten deployment path cannot recreate `dbo.DataPoints`.
 
 ## 3. Entra External ID
 
@@ -311,7 +311,7 @@ No production secrets on a laptop.
 
 - [ ] `deploy-infrastructure` plan succeeds and apply is reviewed before it runs.
 - [ ] `AZURE_WEBAPP_NAME` and `AZURE_FUNCTIONAPP_NAME` match Terraform names, and `deploy-solution` deploys after `azure/login`.
-- [ ] `deploy-database` is either able to reach SQL through a temporary named firewall rule or is already removed.
+- [ ] `deploy-database` is removed; schema deployment uses only EF Core migrations in `ReMind.Data`.
 - [ ] No storage account key, SQL password, Maps key, social client secret, or subject pseudonym key is in git.
 - [ ] External ID tenant id is not the SQL server's tenant id.
 - [ ] "Allow Azure services" is off.
