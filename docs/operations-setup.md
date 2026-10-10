@@ -311,7 +311,7 @@ No production secrets on a laptop.
 
 - [ ] `deploy-infrastructure` plan succeeds and apply is reviewed before it runs.
 - [ ] `AZURE_WEBAPP_NAME` and `AZURE_FUNCTIONAPP_NAME` match Terraform names, and `deploy-solution` deploys after `azure/login`.
-- [ ] `deploy-database` is either able to reach SQL through a temporary named firewall rule or is already removed.
+- [ ] `deploy-database` is removed; schema deployment uses only EF Core migrations in `ReMind.Data`.
 - [ ] No storage account key, SQL password, Maps key, social client secret, or subject pseudonym key is in git.
 - [ ] External ID tenant id is not the SQL server's tenant id.
 - [ ] "Allow Azure services" is off.
