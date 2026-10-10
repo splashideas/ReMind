@@ -17,6 +17,7 @@ jobs:
   plan:
     name: Terraform plan
     runs-on: ubuntu-latest
+    environment: production
     defaults:
       run:
         working-directory: infra/terraform
@@ -74,9 +75,19 @@ jobs:
           TF_VAR_sql_aad_admin_object_id: ${{ vars.TF_VAR_SQL_AAD_ADMIN_OBJECT_ID }}
           TF_VAR_sql_admin_password: ${{ secrets.TF_VAR_SQL_ADMIN_PASSWORD }}
           TF_VAR_sql_connection_setting_value: ${{ secrets.TF_VAR_SQL_CONNECTION_SETTING_VALUE }}
+          TF_VAR_external_id_enabled: ${{ vars.TF_VAR_EXTERNAL_ID_ENABLED }}
+          TF_VAR_external_id_tenant_id: ${{ vars.TF_VAR_EXTERNAL_ID_TENANT_ID }}
+          TF_VAR_external_id_key_vault_name: ${{ vars.TF_VAR_EXTERNAL_ID_KEY_VAULT_NAME }}
+          TF_VAR_external_id_web_redirect_uris: ${{ vars.TF_VAR_EXTERNAL_ID_WEB_REDIRECT_URIS }}
+          TF_VAR_external_id_mobile_redirect_uri: ${{ vars.TF_VAR_EXTERNAL_ID_MOBILE_REDIRECT_URI }}
+          TF_VAR_google_client_secret: ${{ secrets.TF_VAR_google_client_secret }}
+          TF_VAR_apple_client_secret: ${{ secrets.TF_VAR_apple_client_secret }}
+          TF_VAR_facebook_client_secret: ${{ secrets.TF_VAR_facebook_client_secret }}
         run: |
           # Drop empty optional TF_VAR_* values so Terraform defaults still apply.
-          for v in TF_VAR_location; do
+          for v in TF_VAR_location TF_VAR_external_id_enabled TF_VAR_external_id_tenant_id \
+            TF_VAR_external_id_key_vault_name TF_VAR_external_id_web_redirect_uris \
+            TF_VAR_external_id_mobile_redirect_uri; do
             if [ -z "${!v}" ]; then unset "$v"; fi
           done
           terraform plan -input=false -out=tfplan
