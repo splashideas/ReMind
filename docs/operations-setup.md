@@ -239,6 +239,15 @@ The opt-in Terraform resources in `infra/terraform` target the External ID tenan
 
 The `production` GitHub Environment must exist because the workflow validates the social-provider secrets there before planning and writes them to Key Vault after apply. Add `TF_VAR_google_client_secret`, `TF_VAR_apple_client_secret`, and `TF_VAR_facebook_client_secret` as environment secrets. Do not use repository secrets or put their values in Terraform variables files. The workflow passes the values directly to Azure CLI; they are not Terraform inputs and are not persisted in Terraform plans or state. The workflow retries Key Vault writes for up to two minutes while the vault role assignment propagates.
 
+Before deploying this version to a tenant that was already provisioned by an earlier workflow, import the existing API pre-authorizations into the same Terraform state. The earlier workflow created them with Microsoft Graph outside Terraform, so Terraform cannot adopt them automatically. After initializing the production backend with External ID enabled, get the API object ID from `terraform state show -no-color 'azuread_application.api[0]'` and the client IDs from `terraform output -raw spa_app_client_id` and `terraform output -raw mobile_app_client_id`, then run:
+
+```bash
+terraform import 'azuread_application_pre_authorized.spa[0]' '<API_APP_OBJECT_ID>/preAuthorizedApplication/<SPA_CLIENT_ID>'
+terraform import 'azuread_application_pre_authorized.mobile[0]' '<API_APP_OBJECT_ID>/preAuthorizedApplication/<MOBILE_CLIENT_ID>'
+```
+
+Use the API application's object ID GUID (without the `/applications/` prefix) in both import IDs. Skip this migration for a new tenant where the previous workflow has not created the pre-authorizations.
+
 The configuration registers:
 
 - **API app**: `api://<API-client-id>` identifier URI, an admin-consent-only `access_as_user` delegated scope, and v2 access tokens. Terraform pre-authorizes both clients for that scope with `azuread_application_pre_authorized`. The `api_audience` output is the API client id, the `aud` value to validate; `api_scope` is the URI clients request. No API client secret is created.
