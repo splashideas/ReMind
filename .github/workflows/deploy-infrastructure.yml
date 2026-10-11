@@ -17,6 +17,7 @@ jobs:
   plan:
     name: Terraform plan
     runs-on: ubuntu-latest
+    environment: production
     defaults:
       run:
         working-directory: infra/terraform
@@ -74,11 +75,35 @@ jobs:
           TF_VAR_sql_aad_admin_object_id: ${{ vars.TF_VAR_SQL_AAD_ADMIN_OBJECT_ID }}
           TF_VAR_sql_admin_password: ${{ secrets.TF_VAR_SQL_ADMIN_PASSWORD }}
           TF_VAR_sql_connection_setting_value: ${{ secrets.TF_VAR_SQL_CONNECTION_SETTING_VALUE }}
+          TF_VAR_external_id_enabled: ${{ vars.TF_VAR_EXTERNAL_ID_ENABLED }}
+          TF_VAR_external_id_tenant_id: ${{ vars.TF_VAR_EXTERNAL_ID_TENANT_ID }}
+          TF_VAR_external_id_key_vault_name: ${{ vars.TF_VAR_EXTERNAL_ID_KEY_VAULT_NAME }}
+          TF_VAR_external_id_web_redirect_uris: ${{ vars.TF_VAR_EXTERNAL_ID_WEB_REDIRECT_URIS }}
+          TF_VAR_external_id_mobile_redirect_uri: ${{ vars.TF_VAR_EXTERNAL_ID_MOBILE_REDIRECT_URI }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.TF_VAR_google_client_secret }}
+          APPLE_CLIENT_SECRET: ${{ secrets.TF_VAR_apple_client_secret }}
+          FACEBOOK_CLIENT_SECRET: ${{ secrets.TF_VAR_facebook_client_secret }}
         run: |
+          external_id_enabled=${TF_VAR_external_id_enabled:-false}
+          if [[ "${external_id_enabled,,}" == "true" ]]; then
+            for v in TF_VAR_external_id_tenant_id TF_VAR_external_id_key_vault_name \
+              TF_VAR_external_id_web_redirect_uris GOOGLE_CLIENT_SECRET \
+              APPLE_CLIENT_SECRET FACEBOOK_CLIENT_SECRET; do
+              if [[ -z "${!v:-}" ]]; then
+                echo "::error::$v is required when External ID is enabled."
+                exit 1
+              fi
+            done
+          fi
+
           # Drop empty optional TF_VAR_* values so Terraform defaults still apply.
-          for v in TF_VAR_location; do
+          for v in TF_VAR_location TF_VAR_external_id_enabled TF_VAR_external_id_tenant_id \
+            TF_VAR_external_id_key_vault_name TF_VAR_external_id_web_redirect_uris \
+            TF_VAR_external_id_mobile_redirect_uri; do
             if [ -z "${!v}" ]; then unset "$v"; fi
           done
+
+          unset GOOGLE_CLIENT_SECRET APPLE_CLIENT_SECRET FACEBOOK_CLIENT_SECRET
           terraform plan -input=false -out=tfplan
 
       - name: Upload plan file to Azure Storage
@@ -95,6 +120,7 @@ jobs:
     name: Terraform apply
     needs: plan
     runs-on: ubuntu-latest
+    environment: production
     defaults:
       run:
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -132,13 +158,52 @@ jobs:
             --auth-mode login
 
       - name: Terraform apply
+        id: terraform_apply
         run: terraform apply -input=false -auto-approve tfplan
 
-      # Delete only after a successful apply so "Re-run failed jobs" can still
-      # download the plan. Deletion failures fail the job (no silent ignore);
-      # the storage lifecycle rule expires abandoned/cancelled plan blobs.
+      - name: Store External ID provider secrets in Key Vault
+        env:
+          GOOGLE_CLIENT_SECRET: ${{ secrets.TF_VAR_google_client_secret }}
+          APPLE_CLIENT_SECRET: ${{ secrets.TF_VAR_apple_client_secret }}
+          FACEBOOK_CLIENT_SECRET: ${{ secrets.TF_VAR_facebook_client_secret }}
+        run: |
+          if [ "$(terraform output -raw external_id_enabled)" != "true" ]; then
+            echo "External ID is disabled in the applied Terraform state; skipping secret writes."
+            exit 0
+          fi
+
+          KEY_VAULT_NAME="$(terraform output -raw external_id_key_vault_name)"
+
+          for secret_name in google-client-secret apple-client-secret facebook-client-secret; do
+            case "$secret_name" in
+              google-client-secret) secret_value="$GOOGLE_CLIENT_SECRET" ;;
+              apple-client-secret) secret_value="$APPLE_CLIENT_SECRET" ;;
+              facebook-client-secret) secret_value="$FACEBOOK_CLIENT_SECRET" ;;
+            esac
+
+            stored=false
+            for attempt in {1..12}; do
+              if az keyvault secret set \
+                --vault-name "$KEY_VAULT_NAME" \
+                --name "$secret_name" \
+                --value "$secret_value" \
+                --only-show-errors >/dev/null; then
+                stored=true
+                break
+              fi
+              if [ "$attempt" -lt 12 ]; then sleep 10; fi
+            done
+
+            if [ "$stored" != true ]; then
+              echo "::error::Could not store $secret_name after 12 attempts"
+              exit 1
+            fi
+          done
+
+      # Preserve the plan only when Terraform apply itself fails; after a
+      # successful apply it is stale even if a post-apply step fails.
       - name: Remove plan file from Azure Storage
-        if: success()
+        if: ${{ always() && steps.terraform_apply.outcome == 'success' }}
         run: |
           az storage blob delete \
             --account-name "${{ vars.TF_BACKEND_STORAGE_ACCOUNT }}" \
