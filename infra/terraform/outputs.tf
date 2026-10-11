@@ -15,6 +15,16 @@ output "external_id_tenant_id" {
   value       = var.external_id_enabled ? var.external_id_tenant_id : null
 }
 
+output "external_id_enabled" {
+  description = "Whether External ID resources are enabled in the applied configuration."
+  value       = var.external_id_enabled
+}
+
+output "external_id_key_vault_name" {
+  description = "Name of the Key Vault for External ID provider secrets."
+  value       = var.external_id_enabled ? azurerm_key_vault.external_id[0].name : null
+}
+
 output "api_audience" {
   description = "Audience claim value for v2 access tokens issued for ReMind.Api."
   value       = var.external_id_enabled ? azuread_application.api[0].client_id : null

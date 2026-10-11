@@ -57,9 +57,7 @@ resource "azuread_application" "api" {
       admin_consent_display_name = "Access ReMind.Api"
       enabled                    = true
       id                         = "2d3f6dc1-8932-4e9f-b8ac-3ca24aad6e2b"
-      type                       = "User"
-      user_consent_description   = "Allow this application to access ReMind.Api on your behalf."
-      user_consent_display_name  = "Access ReMind.Api"
+      type                       = "Admin"
       value                      = "access_as_user"
     }
 
@@ -111,6 +109,11 @@ resource "azuread_application" "spa" {
 
   lifecycle {
     ignore_changes = [required_resource_access]
+
+    precondition {
+      condition     = length(var.external_id_web_redirect_uris) > 0
+      error_message = "At least one deployed SPA redirect URI is required when External ID is enabled."
+    }
   }
 }
 

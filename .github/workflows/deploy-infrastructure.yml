@@ -162,13 +162,18 @@ jobs:
         run: terraform apply -input=false -auto-approve tfplan
 
       - name: Store External ID provider secrets in Key Vault
-        if: ${{ vars.TF_VAR_EXTERNAL_ID_ENABLED == 'true' }}
         env:
-          KEY_VAULT_NAME: ${{ vars.TF_VAR_EXTERNAL_ID_KEY_VAULT_NAME }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.TF_VAR_google_client_secret }}
           APPLE_CLIENT_SECRET: ${{ secrets.TF_VAR_apple_client_secret }}
           FACEBOOK_CLIENT_SECRET: ${{ secrets.TF_VAR_facebook_client_secret }}
         run: |
+          if [ "$(terraform output -raw external_id_enabled)" != "true" ]; then
+            echo "External ID is disabled in the applied Terraform state; skipping secret writes."
+            exit 0
+          fi
+
+          KEY_VAULT_NAME="$(terraform output -raw external_id_key_vault_name)"
+
           for secret_name in google-client-secret apple-client-secret facebook-client-secret; do
             case "$secret_name" in
               google-client-secret) secret_value="$GOOGLE_CLIENT_SECRET" ;;

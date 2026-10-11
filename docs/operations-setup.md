@@ -241,7 +241,7 @@ The `production` GitHub Environment must exist because the workflow validates th
 
 The configuration registers:
 
-- **API app**: `api://<API-client-id>` identifier URI, `access_as_user` delegated scope, and v2 access tokens. Terraform pre-authorizes both clients for that scope. The `api_audience` output is the API client id, the `aud` value to validate; `api_scope` is the URI clients request. No API client secret is created.
+- **API app**: `api://<API-client-id>` identifier URI, an admin-consent-only `access_as_user` delegated scope, and v2 access tokens. Terraform pre-authorizes both clients for that scope with `azuread_application_pre_authorized`. The `api_audience` output is the API client id, the `aud` value to validate; `api_scope` is the URI clients request. No API client secret is created.
 - **SPA app**: local and deployed redirect URIs on the SPA platform. Implicit token issuance is disabled; use authorization code + PKCE.
 - **Mobile app**: public client with `remind-mobile://auth`, matching the `remind-mobile` scheme in `src/ReMind.Mobile/app.json`. Implicit token issuance is disabled; use authorization code + PKCE. No client secret is created.
 - **Admin app role**: app role value `Admin`, emitted in the `roles` claim when assigned. Assign it only to operator users in Entra; there is no self-service role API.
