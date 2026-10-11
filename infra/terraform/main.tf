@@ -108,6 +108,10 @@ resource "azuread_application" "spa" {
       var.external_id_web_redirect_uris,
     )
   }
+
+  lifecycle {
+    ignore_changes = [required_resource_access]
+  }
 }
 
 resource "azuread_application_api_access" "spa" {
@@ -136,6 +140,10 @@ resource "azuread_application" "mobile" {
 
   public_client {
     redirect_uris = [var.external_id_mobile_redirect_uri]
+  }
+
+  lifecycle {
+    ignore_changes = [required_resource_access]
   }
 }
 
