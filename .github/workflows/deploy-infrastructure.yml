@@ -84,10 +84,23 @@ jobs:
           TF_VAR_apple_client_secret: ${{ secrets.TF_VAR_apple_client_secret }}
           TF_VAR_facebook_client_secret: ${{ secrets.TF_VAR_facebook_client_secret }}
         run: |
+          external_id_enabled=${TF_VAR_external_id_enabled:-false}
+          if [[ "${external_id_enabled,,}" == "true" ]]; then
+            for v in TF_VAR_external_id_tenant_id TF_VAR_external_id_key_vault_name \
+              TF_VAR_external_id_web_redirect_uris TF_VAR_google_client_secret \
+              TF_VAR_apple_client_secret TF_VAR_facebook_client_secret; do
+              if [[ -z "${!v:-}" ]]; then
+                echo "::error::$v is required when External ID is enabled."
+                exit 1
+              fi
+            done
+          fi
+
           # Drop empty optional TF_VAR_* values so Terraform defaults still apply.
           for v in TF_VAR_location TF_VAR_external_id_enabled TF_VAR_external_id_tenant_id \
             TF_VAR_external_id_key_vault_name TF_VAR_external_id_web_redirect_uris \
-            TF_VAR_external_id_mobile_redirect_uri; do
+            TF_VAR_external_id_mobile_redirect_uri TF_VAR_google_client_secret \
+            TF_VAR_apple_client_secret TF_VAR_facebook_client_secret; do
             if [ -z "${!v}" ]; then unset "$v"; fi
           done
           terraform plan -input=false -out=tfplan

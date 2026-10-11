@@ -16,8 +16,9 @@ The current-stack narrative also lives in the repository [`README.md`](../README
 | GitHub Actions service principal or OIDC app registration in the **subscription** Entra tenant | Chicken-and-egg: Actions must authenticate before Terraform runs | `az ad sp` / Entra portal, then GitHub secrets |
 | GitHub Actions secrets, variables, and environment protection | GitHub settings, not Azure resources | Repository Settings |
 | Entra **External ID** tenant | Separate customer-identity tenant from the SQL server's Entra tenant; tenant creation is not a reliable Terraform resource | Microsoft Entra admin center |
+| External ID customer user flow and app association | The AzureAD provider does not manage External ID customer user flows or their application associations ([issue #1798](https://github.com/hashicorp/terraform-provider-azuread/issues/1798)) | Microsoft Entra admin center; follow §3.3 |
 | Social IdP apps (Google, Apple, Facebook) | Created in those vendors' consoles | Vendor consoles |
-| External ID social-provider configuration | The AzureAD Terraform provider has no resource for configuring CIAM social providers | Microsoft Entra admin center; follow §3.3 |
+| External ID social-provider configuration | The AzureAD Terraform provider has no resource for configuring CIAM social providers | Microsoft Entra admin center; follow §3.4 |
 | Custom-domain registrar records | The domain registrar is outside Azure | Registrar; Front Door custom-domain resource is still Terraform |
 | First environment inventory of `dbo.DataPoints` | A read against existing databases, not a resource | SQL query from an identity that can already connect |
 | Self-hosted runner registration, only if the Azure-side migration job cannot reach private SQL | GitHub runner install is outside Azure | Last resort; prefer an Azure job in the VNet |
@@ -251,9 +252,25 @@ Do not proceed with the first enabled apply until a disposable registration has 
 
 Non-secret ids (tenant id, client ids, audience) are Terraform outputs or non-secret app settings. The Key Vault is created in the subscription tenant and contains the three social-provider secrets. Terraform state and plan artifacts are access-controlled and may contain provider-managed secret values; plan text redacts them. The SPA and mobile apps are public clients and must not have secrets.
 
-For the acceptance check, sign in a non-production user through the SPA's authorization-code + PKCE flow, request `api_scope`, and confirm locally that the access token's `aud` equals `api_audience`. Assign the `Admin` app role to a separate operator test user in **Enterprise applications → ReMind.Api → Users and groups**, then confirm that user's access token contains `roles: ["Admin"]`; confirm the ordinary user's token has no `Admin` role. Do not paste or log access tokens. These registrations do not add auth code to the current React scaffold; run this check once its sign-in flow is available.
+**Blocking follow-up for issue #22:** the current React scaffold has no sign-in flow, so its PKCE and token acceptance checks have not been run. Keep issue #22 open and do not use a closing reference in the PR until the check below has been completed and its result recorded:
 
-### 3.3 Social identity providers (manual vendor consoles)
+1. Sign in a non-production user through the SPA's authorization-code + PKCE flow, request `api_scope`, and confirm locally that the access token's `aud` equals `api_audience`.
+2. Assign the `Admin` app role to a separate operator test user in **Enterprise applications → ReMind.Api → Users and groups**. Confirm that user's token contains `roles: ["Admin"]` and the ordinary user's token has no `Admin` role.
+
+Do not paste or log access tokens.
+
+### 3.3 Customer sign-up and sign-in user flow (manual)
+
+The AzureAD provider does not currently manage External ID customer user flows or associate them with applications. After the app registrations exist and the desired identity providers are configured:
+
+1. In the External ID tenant, open **External Identities → User flows → New user flow** and create a **Sign up and sign in** flow.
+2. Configure the approved sign-in methods and sign-up attributes for ReMind.
+3. Open the flow's **Applications** page, add both `ReMind.Web` and `ReMind.Mobile`, and save.
+4. Use **Run user flow** to verify that the flow opens and returns to the configured client redirect URI.
+
+Record the flow name and associated client applications in the infrastructure PR. Do not record tokens or secrets.
+
+### 3.4 Social identity providers (manual vendor consoles)
 
 Google Cloud Console, Apple Developer, and Meta for Developers each need an OAuth client whose redirect URI is the External ID tenant's identity-provider callback (shown in the Entra External ID IdP blade). Those consoles are outside Azure.
 

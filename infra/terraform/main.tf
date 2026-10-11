@@ -190,13 +190,36 @@ resource "azurerm_role_assignment" "external_id_key_vault_secrets_officer" {
   principal_id         = data.azurerm_client_config.current.object_id
 }
 
+resource "terraform_data" "external_id_key_vault_rbac_ready" {
+  count            = var.external_id_enabled ? 1 : 0
+  triggers_replace = [azurerm_role_assignment.external_id_key_vault_secrets_officer[0].id]
+
+  provisioner "local-exec" {
+    environment = {
+      KEY_VAULT_NAME = var.external_id_key_vault_name
+    }
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-EOT
+      for attempt in {1..30}; do
+        if az keyvault secret list --vault-name "$KEY_VAULT_NAME" \
+          --only-show-errors --query 'length(@)' --output tsv >/dev/null 2>&1; then
+          exit 0
+        fi
+        sleep 10
+      done
+      echo "Timed out waiting for Key Vault Secrets Officer permissions to propagate." >&2
+      exit 1
+    EOT
+  }
+}
+
 resource "azurerm_key_vault_secret" "google_client_secret" {
   count        = var.external_id_enabled ? 1 : 0
   name         = "google-client-secret"
   value        = var.google_client_secret
   key_vault_id = azurerm_key_vault.external_id[0].id
 
-  depends_on = [azurerm_role_assignment.external_id_key_vault_secrets_officer]
+  depends_on = [terraform_data.external_id_key_vault_rbac_ready]
 }
 
 resource "azurerm_key_vault_secret" "apple_client_secret" {
@@ -205,7 +228,7 @@ resource "azurerm_key_vault_secret" "apple_client_secret" {
   value        = var.apple_client_secret
   key_vault_id = azurerm_key_vault.external_id[0].id
 
-  depends_on = [azurerm_role_assignment.external_id_key_vault_secrets_officer]
+  depends_on = [terraform_data.external_id_key_vault_rbac_ready]
 }
 
 resource "azurerm_key_vault_secret" "facebook_client_secret" {
@@ -214,7 +237,7 @@ resource "azurerm_key_vault_secret" "facebook_client_secret" {
   value        = var.facebook_client_secret
   key_vault_id = azurerm_key_vault.external_id[0].id
 
-  depends_on = [azurerm_role_assignment.external_id_key_vault_secrets_officer]
+  depends_on = [terraform_data.external_id_key_vault_rbac_ready]
 }
 
 resource "azurerm_resource_group" "remind" {
