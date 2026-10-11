@@ -207,7 +207,7 @@ resource "terraform_data" "external_id_key_vault_rbac_ready" {
         fi
         sleep 10
       done
-      echo "Timed out waiting for Key Vault Secrets Officer permissions to propagate." >&2
+      echo "Timed out waiting for Key Vault Secrets Officer permissions to propagate; start a new workflow run to generate a fresh plan before retrying." >&2
       exit 1
     EOT
   }
