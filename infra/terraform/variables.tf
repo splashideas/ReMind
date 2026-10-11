@@ -82,24 +82,3 @@ variable "external_id_mobile_redirect_uri" {
   description = "ReMind.Mobile public-client redirect URI; keep aligned with the Expo app scheme."
   default     = "remind-mobile://auth"
 }
-
-variable "google_client_secret" {
-  type        = string
-  description = "Google OAuth client secret, supplied through a GitHub environment secret."
-  sensitive   = true
-  default     = null
-}
-
-variable "apple_client_secret" {
-  type        = string
-  description = "Apple OAuth client secret, supplied through a GitHub environment secret."
-  sensitive   = true
-  default     = null
-}
-
-variable "facebook_client_secret" {
-  type        = string
-  description = "Facebook OAuth client secret, supplied through a GitHub environment secret."
-  sensitive   = true
-  default     = null
-}

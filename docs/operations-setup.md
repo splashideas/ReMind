@@ -237,11 +237,11 @@ The opt-in Terraform resources in `infra/terraform` target the External ID tenan
 - `TF_VAR_EXTERNAL_ID_KEY_VAULT_NAME=<globally unique Key Vault name>`
 - `TF_VAR_EXTERNAL_ID_WEB_REDIRECT_URIS=["https://<deployed-spa-origin>/"]` (valid JSON list; local `http://localhost:5173/` is registered automatically)
 
-The `production` GitHub Environment must exist because the plan job reads the social-provider secrets from it. Add `TF_VAR_google_client_secret`, `TF_VAR_apple_client_secret`, and `TF_VAR_facebook_client_secret` as environment secrets. Do not use repository secrets or put their values in Terraform variables files. Terraform marks these inputs sensitive and writes them to the RBAC-protected Key Vault.
+The `production` GitHub Environment must exist because the workflow validates the social-provider secrets there before planning and writes them to Key Vault after apply. Add `TF_VAR_google_client_secret`, `TF_VAR_apple_client_secret`, and `TF_VAR_facebook_client_secret` as environment secrets. Do not use repository secrets or put their values in Terraform variables files. The workflow passes the values directly to Azure CLI; they are not Terraform inputs and are not persisted in Terraform plans or state. The workflow retries Key Vault writes for up to two minutes while the vault role assignment propagates.
 
 The configuration registers:
 
-- **API app**: `api://<API-client-id>` identifier URI, `access_as_user` delegated scope, and v2 access tokens. The `api_audience` output is the API client id, the `aud` value to validate; `api_scope` is the URI clients request. No API client secret is created.
+- **API app**: `api://<API-client-id>` identifier URI, `access_as_user` delegated scope, and v2 access tokens. The protected apply workflow pre-authorizes both clients for that scope through Microsoft Graph because the pinned AzureAD provider does not expose `preAuthorizedApplications`. The `api_audience` output is the API client id, the `aud` value to validate; `api_scope` is the URI clients request. No API client secret is created.
 - **SPA app**: local and deployed redirect URIs on the SPA platform. Implicit token issuance is disabled; use authorization code + PKCE.
 - **Mobile app**: public client with `remind-mobile://auth`, matching the `remind-mobile` scheme in `src/ReMind.Mobile/app.json`. Implicit token issuance is disabled; use authorization code + PKCE. No client secret is created.
 - **Admin app role**: app role value `Admin`, emitted in the `roles` claim when assigned. Assign it only to operator users in Entra; there is no self-service role API.
@@ -250,7 +250,7 @@ Do not proceed with the first enabled apply until a disposable registration has 
 
 **Portal fallback when app registration automation is unavailable:** in the External ID tenant, create an API app and expose `api://<API-client-id>/access_as_user`; create a single-page app with `http://localhost:5173/` and the deployed origin as redirect URIs; create a public-client app with `remind-mobile://auth`; disable implicit grant; then add the API delegated scope to both clients. On the API app, add a user-assigned app role with display name and value `Admin`, then assign only operator accounts under Enterprise applications → Users and groups. Do not create client secrets for either public client or add a self-service role grant. Record all client ids and the API audience, but no secrets, in the PR.
 
-Non-secret ids (tenant id, client ids, audience) are Terraform outputs or non-secret app settings. The Key Vault is created in the subscription tenant and contains the three social-provider secrets. Terraform state and plan artifacts are access-controlled and may contain provider-managed secret values; plan text redacts them. The SPA and mobile apps are public clients and must not have secrets.
+Non-secret ids (tenant id, client ids, audience) are Terraform outputs or non-secret app settings. The Key Vault is created in the subscription tenant and contains the three social-provider secrets. Terraform state and plan artifacts contain no social-provider secret values. The SPA and mobile apps are public clients and must not have secrets.
 
 **Blocking follow-up for issue #22:** the current React scaffold has no sign-in flow, so its PKCE and token acceptance checks have not been run. Keep issue #22 open and do not use a closing reference in the PR until the check below has been completed and its result recorded:
 
@@ -276,7 +276,7 @@ Google Cloud Console, Apple Developer, and Meta for Developers each need an OAut
 
 After you have the client id and secret:
 
-1. Add the secrets as `TF_VAR_google_client_secret`, `TF_VAR_apple_client_secret`, and `TF_VAR_facebook_client_secret` in GitHub Settings → Environments → `production`. Terraform writes them to Key Vault; do not commit them or print them in logs.
+1. Add the secrets as `TF_VAR_google_client_secret`, `TF_VAR_apple_client_secret`, and `TF_VAR_facebook_client_secret` in GitHub Settings → Environments → `production`. The deployment workflow writes them to Key Vault after Terraform apply; do not commit them or print them in logs.
 2. In Microsoft Entra admin center, open External Identities → All identity providers. Add only Google, Apple, and Facebook, using each vendor's client id and secret. The identity-provider callback URL shown there must be configured as the OAuth redirect URI in the matching vendor console.
 3. Complete a test sign-in for each enabled provider after the customer flow is available. Apple credentials expire; document the rotation date in the issue that lands the IdP, update the GitHub environment secret, and re-run the Terraform plan/apply.
 

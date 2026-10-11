@@ -80,15 +80,15 @@ jobs:
           TF_VAR_external_id_key_vault_name: ${{ vars.TF_VAR_EXTERNAL_ID_KEY_VAULT_NAME }}
           TF_VAR_external_id_web_redirect_uris: ${{ vars.TF_VAR_EXTERNAL_ID_WEB_REDIRECT_URIS }}
           TF_VAR_external_id_mobile_redirect_uri: ${{ vars.TF_VAR_EXTERNAL_ID_MOBILE_REDIRECT_URI }}
-          TF_VAR_google_client_secret: ${{ secrets.TF_VAR_google_client_secret }}
-          TF_VAR_apple_client_secret: ${{ secrets.TF_VAR_apple_client_secret }}
-          TF_VAR_facebook_client_secret: ${{ secrets.TF_VAR_facebook_client_secret }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.TF_VAR_google_client_secret }}
+          APPLE_CLIENT_SECRET: ${{ secrets.TF_VAR_apple_client_secret }}
+          FACEBOOK_CLIENT_SECRET: ${{ secrets.TF_VAR_facebook_client_secret }}
         run: |
           external_id_enabled=${TF_VAR_external_id_enabled:-false}
           if [[ "${external_id_enabled,,}" == "true" ]]; then
             for v in TF_VAR_external_id_tenant_id TF_VAR_external_id_key_vault_name \
-              TF_VAR_external_id_web_redirect_uris TF_VAR_google_client_secret \
-              TF_VAR_apple_client_secret TF_VAR_facebook_client_secret; do
+              TF_VAR_external_id_web_redirect_uris GOOGLE_CLIENT_SECRET \
+              APPLE_CLIENT_SECRET FACEBOOK_CLIENT_SECRET; do
               if [[ -z "${!v:-}" ]]; then
                 echo "::error::$v is required when External ID is enabled."
                 exit 1
@@ -99,10 +99,11 @@ jobs:
           # Drop empty optional TF_VAR_* values so Terraform defaults still apply.
           for v in TF_VAR_location TF_VAR_external_id_enabled TF_VAR_external_id_tenant_id \
             TF_VAR_external_id_key_vault_name TF_VAR_external_id_web_redirect_uris \
-            TF_VAR_external_id_mobile_redirect_uri TF_VAR_google_client_secret \
-            TF_VAR_apple_client_secret TF_VAR_facebook_client_secret; do
+            TF_VAR_external_id_mobile_redirect_uri; do
             if [ -z "${!v}" ]; then unset "$v"; fi
           done
+
+          unset GOOGLE_CLIENT_SECRET APPLE_CLIENT_SECRET FACEBOOK_CLIENT_SECRET
           terraform plan -input=false -out=tfplan
 
       - name: Upload plan file to Azure Storage
@@ -157,13 +158,98 @@ jobs:
             --auth-mode login
 
       - name: Terraform apply
+        id: terraform_apply
         run: terraform apply -input=false -auto-approve tfplan
 
-      # Delete only after a successful apply so "Re-run failed jobs" can still
-      # download the plan. Deletion failures fail the job (no silent ignore);
-      # the storage lifecycle rule expires abandoned/cancelled plan blobs.
+      - name: Pre-authorize External ID clients for the API scope
+        if: ${{ vars.TF_VAR_EXTERNAL_ID_ENABLED == 'true' }}
+        env:
+          EXTERNAL_ID_TENANT_ID: ${{ vars.TF_VAR_EXTERNAL_ID_TENANT_ID }}
+        run: |
+          api_object_id="$(terraform output -raw api_app_object_id)"
+          spa_client_id="$(terraform output -raw spa_app_client_id)"
+          mobile_client_id="$(terraform output -raw mobile_app_client_id)"
+          scope_id="2d3f6dc1-8932-4e9f-b8ac-3ca24aad6e2b"
+          graph_token="$(az account get-access-token \
+            --tenant "$EXTERNAL_ID_TENANT_ID" \
+            --resource-type ms-graph \
+            --query accessToken -o tsv)"
+          body="$(jq -n \
+            --arg spa_client_id "$spa_client_id" \
+            --arg mobile_client_id "$mobile_client_id" \
+            --arg scope_id "$scope_id" \
+            '{
+              api: {
+                requestedAccessTokenVersion: 2,
+                oauth2PermissionScopes: [{
+                  adminConsentDescription: "Allow the application to access ReMind.Api on behalf of the signed-in user.",
+                  adminConsentDisplayName: "Access ReMind.Api",
+                  id: $scope_id,
+                  isEnabled: true,
+                  type: "User",
+                  userConsentDescription: "Allow this application to access ReMind.Api on your behalf.",
+                  userConsentDisplayName: "Access ReMind.Api",
+                  value: "access_as_user"
+                }],
+                preAuthorizedApplications: [
+                  {
+                    appId: $spa_client_id,
+                    delegatedPermissionIds: [$scope_id]
+                  },
+                  {
+                    appId: $mobile_client_id,
+                    delegatedPermissionIds: [$scope_id]
+                  }
+                ]
+              }
+            }')"
+          auth_header="$(printf '%s %s' 'Bearer' "$graph_token")"
+          printf 'header = "Authorization: %s"\n' "$auth_header" |
+            curl --config - --fail --silent --show-error --output /dev/null \
+            --request PATCH \
+            --header "Content-Type: application/json" \
+            --data "$body" \
+            "https://graph.microsoft.com/v1.0/applications/$api_object_id"
+          unset graph_token auth_header body
+
+      - name: Store External ID provider secrets in Key Vault
+        if: ${{ vars.TF_VAR_EXTERNAL_ID_ENABLED == 'true' }}
+        env:
+          KEY_VAULT_NAME: ${{ vars.TF_VAR_EXTERNAL_ID_KEY_VAULT_NAME }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.TF_VAR_google_client_secret }}
+          APPLE_CLIENT_SECRET: ${{ secrets.TF_VAR_apple_client_secret }}
+          FACEBOOK_CLIENT_SECRET: ${{ secrets.TF_VAR_facebook_client_secret }}
+        run: |
+          for secret_name in google-client-secret apple-client-secret facebook-client-secret; do
+            case "$secret_name" in
+              google-client-secret) secret_value="$GOOGLE_CLIENT_SECRET" ;;
+              apple-client-secret) secret_value="$APPLE_CLIENT_SECRET" ;;
+              facebook-client-secret) secret_value="$FACEBOOK_CLIENT_SECRET" ;;
+            esac
+
+            stored=false
+            for attempt in {1..12}; do
+              if az keyvault secret set \
+                --vault-name "$KEY_VAULT_NAME" \
+                --name "$secret_name" \
+                --value "$secret_value" \
+                --only-show-errors >/dev/null; then
+                stored=true
+                break
+              fi
+              if [ "$attempt" -lt 12 ]; then sleep 10; fi
+            done
+
+            if [ "$stored" != true ]; then
+              echo "::error::Could not store $secret_name after 12 attempts"
+              exit 1
+            fi
+          done
+
+      # Preserve the plan only when Terraform apply itself fails; after a
+      # successful apply it is stale even if a post-apply step fails.
       - name: Remove plan file from Azure Storage
-        if: success()
+        if: ${{ always() && steps.terraform_apply.outcome == 'success' }}
         run: |
           az storage blob delete \
             --account-name "${{ vars.TF_BACKEND_STORAGE_ACCOUNT }}" \
