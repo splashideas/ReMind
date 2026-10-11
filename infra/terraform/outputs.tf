@@ -30,11 +30,6 @@ output "api_app_client_id" {
   value       = var.external_id_enabled ? azuread_application.api[0].client_id : null
 }
 
-output "api_app_object_id" {
-  description = "Object id used to configure API preauthorization in Microsoft Graph."
-  value       = var.external_id_enabled ? azuread_application.api[0].object_id : null
-}
-
 output "spa_app_client_id" {
   description = "ReMind.Web SPA application client id."
   value       = var.external_id_enabled ? azuread_application.spa[0].client_id : null

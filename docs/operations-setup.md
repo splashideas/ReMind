@@ -224,9 +224,9 @@ Customer sign-in is a **new** External ID tenant. Do not reuse the tenant that a
    az ad sp show --id "<GITHUB_DEPLOYMENT_CLIENT_ID>" --query id -o tsv
    ```
 
-   In the External ID tenant, open **Roles and administrators → Cloud Application Administrator → Add assignments**, select that service principal, and assign the role. Verify its tenant-local service principal exists and the deployment identity can sign in to that tenant before enabling the Terraform resources.
+   In the deployment app registration, add the Microsoft Graph **application** permission `Application.ReadWrite.OwnedBy` (preferred) or `Application.ReadWrite.All`. A tenant administrator must grant consent to that permission for the deployment application's service principal in the External ID tenant. With `Application.ReadWrite.OwnedBy`, verify that the Terraform identity owns the applications it manages; the Terraform resources set that ownership. Verify the tenant-local service principal exists and the deployment identity can sign in to that tenant before enabling the Terraform resources.
 
-5. If tenant policy prevents making the deployment app multi-tenant, creating its service principal, or assigning the directory role, stop after tenant creation. Do not set `TF_VAR_EXTERNAL_ID_ENABLED=true` and do not claim app registrations are managed by Terraform. Use the portal fallback in §3.2 and record the blocking policy and completed clicks in the PR.
+5. If tenant policy prevents making the deployment app multi-tenant, creating its service principal, or granting the required Microsoft Graph application permission, stop after tenant creation. Do not set `TF_VAR_EXTERNAL_ID_ENABLED=true` and do not claim app registrations are managed by Terraform. Use the portal fallback in §3.2 and record the blocking policy and completed clicks in the PR.
 
 ### 3.2 App registrations (Terraform after the tenant exists)
 
@@ -241,7 +241,7 @@ The `production` GitHub Environment must exist because the workflow validates th
 
 The configuration registers:
 
-- **API app**: `api://<API-client-id>` identifier URI, `access_as_user` delegated scope, and v2 access tokens. The protected apply workflow pre-authorizes both clients for that scope through Microsoft Graph because the pinned AzureAD provider does not expose `preAuthorizedApplications`. The `api_audience` output is the API client id, the `aud` value to validate; `api_scope` is the URI clients request. No API client secret is created.
+- **API app**: `api://<API-client-id>` identifier URI, `access_as_user` delegated scope, and v2 access tokens. Terraform pre-authorizes both clients for that scope. The `api_audience` output is the API client id, the `aud` value to validate; `api_scope` is the URI clients request. No API client secret is created.
 - **SPA app**: local and deployed redirect URIs on the SPA platform. Implicit token issuance is disabled; use authorization code + PKCE.
 - **Mobile app**: public client with `remind-mobile://auth`, matching the `remind-mobile` scheme in `src/ReMind.Mobile/app.json`. Implicit token issuance is disabled; use authorization code + PKCE. No client secret is created.
 - **Admin app role**: app role value `Admin`, emitted in the `roles` claim when assigned. Assign it only to operator users in Entra; there is no self-service role API.

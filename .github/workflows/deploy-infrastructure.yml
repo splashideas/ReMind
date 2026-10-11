@@ -161,57 +161,6 @@ jobs:
         id: terraform_apply
         run: terraform apply -input=false -auto-approve tfplan
 
-      - name: Pre-authorize External ID clients for the API scope
-        if: ${{ vars.TF_VAR_EXTERNAL_ID_ENABLED == 'true' }}
-        env:
-          EXTERNAL_ID_TENANT_ID: ${{ vars.TF_VAR_EXTERNAL_ID_TENANT_ID }}
-        run: |
-          api_object_id="$(terraform output -raw api_app_object_id)"
-          spa_client_id="$(terraform output -raw spa_app_client_id)"
-          mobile_client_id="$(terraform output -raw mobile_app_client_id)"
-          scope_id="2d3f6dc1-8932-4e9f-b8ac-3ca24aad6e2b"
-          graph_token="$(az account get-access-token \
-            --tenant "$EXTERNAL_ID_TENANT_ID" \
-            --resource-type ms-graph \
-            --query accessToken -o tsv)"
-          body="$(jq -n \
-            --arg spa_client_id "$spa_client_id" \
-            --arg mobile_client_id "$mobile_client_id" \
-            --arg scope_id "$scope_id" \
-            '{
-              api: {
-                requestedAccessTokenVersion: 2,
-                oauth2PermissionScopes: [{
-                  adminConsentDescription: "Allow the application to access ReMind.Api on behalf of the signed-in user.",
-                  adminConsentDisplayName: "Access ReMind.Api",
-                  id: $scope_id,
-                  isEnabled: true,
-                  type: "User",
-                  userConsentDescription: "Allow this application to access ReMind.Api on your behalf.",
-                  userConsentDisplayName: "Access ReMind.Api",
-                  value: "access_as_user"
-                }],
-                preAuthorizedApplications: [
-                  {
-                    appId: $spa_client_id,
-                    delegatedPermissionIds: [$scope_id]
-                  },
-                  {
-                    appId: $mobile_client_id,
-                    delegatedPermissionIds: [$scope_id]
-                  }
-                ]
-              }
-            }')"
-          auth_header="$(printf '%s %s' 'Bearer' "$graph_token")"
-          printf 'header = "Authorization: %s"\n' "$auth_header" |
-            curl --config - --fail --silent --show-error --output /dev/null \
-            --request PATCH \
-            --header "Content-Type: application/json" \
-            --data "$body" \
-            "https://graph.microsoft.com/v1.0/applications/$api_object_id"
-          unset graph_token auth_header body
-
       - name: Store External ID provider secrets in Key Vault
         if: ${{ vars.TF_VAR_EXTERNAL_ID_ENABLED == 'true' }}
         env:

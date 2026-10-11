@@ -155,6 +155,22 @@ resource "azuread_application_api_access" "mobile" {
   scope_ids      = ["2d3f6dc1-8932-4e9f-b8ac-3ca24aad6e2b"]
 }
 
+resource "azuread_application_pre_authorized" "spa" {
+  count                = var.external_id_enabled ? 1 : 0
+  provider             = azuread.external_id
+  application_id       = azuread_application.api[0].id
+  authorized_client_id = azuread_application.spa[0].client_id
+  permission_ids       = ["2d3f6dc1-8932-4e9f-b8ac-3ca24aad6e2b"]
+}
+
+resource "azuread_application_pre_authorized" "mobile" {
+  count                = var.external_id_enabled ? 1 : 0
+  provider             = azuread.external_id
+  application_id       = azuread_application.api[0].id
+  authorized_client_id = azuread_application.mobile[0].client_id
+  permission_ids       = ["2d3f6dc1-8932-4e9f-b8ac-3ca24aad6e2b"]
+}
+
 resource "azuread_service_principal" "api" {
   count    = var.external_id_enabled ? 1 : 0
   provider = azuread.external_id
