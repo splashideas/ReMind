@@ -1,5 +1,7 @@
 describe('mobile scaffold', () => {
-  it('has a passing placeholder test', () => {
-    expect(true).toBe(true);
+  it('declares the redirect scheme used by the public client', () => {
+    const appConfig = require('./app.json');
+
+    expect(appConfig.expo.scheme).toBe('remind-mobile');
   });
 });

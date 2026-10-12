@@ -6,6 +6,10 @@ terraform {
       source  = "hashicorp/azurerm"
       version = "~> 4.0"
     }
+    azuread = {
+      source  = "hashicorp/azuread"
+      version = "~> 3.0"
+    }
   }
 
   # Partial backend config. Values are supplied at init time via
@@ -15,6 +19,203 @@ terraform {
 
 provider "azurerm" {
   features {}
+}
+
+provider "azuread" {
+  alias     = "external_id"
+  tenant_id = var.external_id_enabled ? var.external_id_tenant_id : null
+}
+
+data "azurerm_client_config" "current" {}
+
+data "azuread_client_config" "external_id" {
+  count    = var.external_id_enabled ? 1 : 0
+  provider = azuread.external_id
+}
+
+resource "azuread_application" "api" {
+  count    = var.external_id_enabled ? 1 : 0
+  provider = azuread.external_id
+
+  display_name                   = "ReMind.Api"
+  sign_in_audience               = "AzureADMyOrg"
+  owners                         = [data.azuread_client_config.external_id[0].object_id]
+  fallback_public_client_enabled = false
+
+  web {
+    implicit_grant {
+      access_token_issuance_enabled = false
+      id_token_issuance_enabled     = false
+    }
+  }
+
+  api {
+    requested_access_token_version = 2
+
+    oauth2_permission_scope {
+      admin_consent_description  = "Allow the application to access ReMind.Api on behalf of the signed-in user."
+      admin_consent_display_name = "Access ReMind.Api"
+      enabled                    = true
+      id                         = "2d3f6dc1-8932-4e9f-b8ac-3ca24aad6e2b"
+      type                       = "Admin"
+      value                      = "access_as_user"
+    }
+
+  }
+
+  app_role {
+    allowed_member_types = ["User"]
+    description          = "Administrators can perform operator actions in ReMind."
+    display_name         = "Admin"
+    enabled              = true
+    id                   = "86b5f6e1-c5d7-42d7-9aa6-781825862fe9"
+    value                = "Admin"
+  }
+
+  lifecycle {
+    ignore_changes = [identifier_uris]
+  }
+}
+
+resource "azuread_application_identifier_uri" "api" {
+  count          = var.external_id_enabled ? 1 : 0
+  provider       = azuread.external_id
+  application_id = azuread_application.api[0].id
+  identifier_uri = "api://${azuread_application.api[0].client_id}"
+}
+
+resource "azuread_application" "spa" {
+  count    = var.external_id_enabled ? 1 : 0
+  provider = azuread.external_id
+
+  display_name                   = "ReMind.Web"
+  sign_in_audience               = "AzureADMyOrg"
+  owners                         = [data.azuread_client_config.external_id[0].object_id]
+  fallback_public_client_enabled = false
+
+  web {
+    implicit_grant {
+      access_token_issuance_enabled = false
+      id_token_issuance_enabled     = false
+    }
+  }
+
+  single_page_application {
+    redirect_uris = concat(
+      ["http://localhost:5173/"],
+      var.external_id_web_redirect_uris,
+    )
+  }
+
+  lifecycle {
+    ignore_changes = [required_resource_access]
+
+    precondition {
+      condition     = length(var.external_id_web_redirect_uris) > 0
+      error_message = "At least one deployed SPA redirect URI is required when External ID is enabled."
+    }
+  }
+}
+
+resource "azuread_application_api_access" "spa" {
+  count          = var.external_id_enabled ? 1 : 0
+  provider       = azuread.external_id
+  application_id = azuread_application.spa[0].id
+  api_client_id  = azuread_application.api[0].client_id
+  scope_ids      = ["2d3f6dc1-8932-4e9f-b8ac-3ca24aad6e2b"]
+}
+
+resource "azuread_application" "mobile" {
+  count    = var.external_id_enabled ? 1 : 0
+  provider = azuread.external_id
+
+  display_name                   = "ReMind.Mobile"
+  sign_in_audience               = "AzureADMyOrg"
+  owners                         = [data.azuread_client_config.external_id[0].object_id]
+  fallback_public_client_enabled = false
+
+  web {
+    implicit_grant {
+      access_token_issuance_enabled = false
+      id_token_issuance_enabled     = false
+    }
+  }
+
+  public_client {
+    redirect_uris = [var.external_id_mobile_redirect_uri]
+  }
+
+  lifecycle {
+    ignore_changes = [required_resource_access]
+  }
+}
+
+resource "azuread_application_api_access" "mobile" {
+  count          = var.external_id_enabled ? 1 : 0
+  provider       = azuread.external_id
+  application_id = azuread_application.mobile[0].id
+  api_client_id  = azuread_application.api[0].client_id
+  scope_ids      = ["2d3f6dc1-8932-4e9f-b8ac-3ca24aad6e2b"]
+}
+
+resource "azuread_application_pre_authorized" "spa" {
+  count                = var.external_id_enabled ? 1 : 0
+  provider             = azuread.external_id
+  application_id       = azuread_application.api[0].id
+  authorized_client_id = azuread_application.spa[0].client_id
+  permission_ids       = ["2d3f6dc1-8932-4e9f-b8ac-3ca24aad6e2b"]
+}
+
+resource "azuread_application_pre_authorized" "mobile" {
+  count                = var.external_id_enabled ? 1 : 0
+  provider             = azuread.external_id
+  application_id       = azuread_application.api[0].id
+  authorized_client_id = azuread_application.mobile[0].client_id
+  permission_ids       = ["2d3f6dc1-8932-4e9f-b8ac-3ca24aad6e2b"]
+}
+
+resource "azuread_service_principal" "api" {
+  count    = var.external_id_enabled ? 1 : 0
+  provider = azuread.external_id
+
+  client_id                    = azuread_application.api[0].client_id
+  app_role_assignment_required = false
+  owners                       = [data.azuread_client_config.external_id[0].object_id]
+}
+
+resource "azuread_service_principal" "spa" {
+  count    = var.external_id_enabled ? 1 : 0
+  provider = azuread.external_id
+
+  client_id = azuread_application.spa[0].client_id
+  owners    = [data.azuread_client_config.external_id[0].object_id]
+}
+
+resource "azuread_service_principal" "mobile" {
+  count    = var.external_id_enabled ? 1 : 0
+  provider = azuread.external_id
+
+  client_id = azuread_application.mobile[0].client_id
+  owners    = [data.azuread_client_config.external_id[0].object_id]
+}
+
+resource "azurerm_key_vault" "external_id" {
+  count               = var.external_id_enabled ? 1 : 0
+  name                = var.external_id_key_vault_name
+  location            = azurerm_resource_group.remind.location
+  resource_group_name = azurerm_resource_group.remind.name
+  tenant_id           = data.azurerm_client_config.current.tenant_id
+  sku_name            = "standard"
+
+  rbac_authorization_enabled = true
+  purge_protection_enabled   = true
+}
+
+resource "azurerm_role_assignment" "external_id_key_vault_secrets_officer" {
+  count                = var.external_id_enabled ? 1 : 0
+  scope                = azurerm_key_vault.external_id[0].id
+  role_definition_name = "Key Vault Secrets Officer"
+  principal_id         = data.azurerm_client_config.current.object_id
 }
 
 resource "azurerm_resource_group" "remind" {
