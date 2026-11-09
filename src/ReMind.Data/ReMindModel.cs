@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using NetTopologySuite.Geometries;
@@ -55,57 +56,60 @@ public static class ReMindSeedData
         CreatedUtc = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
     };
 
-    public static readonly Tag[] SystemTags =
-    [
-        new()
+    // Names are loaded from Seeding/system-tags.json. TagIds stay fixed so HasData does not churn.
+    private static readonly IReadOnlyDictionary<string, Guid> SystemTagIds =
+        new Dictionary<string, Guid>(StringComparer.Ordinal)
         {
-            TagId = new Guid("b22f4342-9b18-fd33-975b-304ecdef8895"),
-            Name = "Historic site",
-            NormalizedName = "historic site",
-            IsSystem = true,
-            CreatedUtc = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
-        },
-        new()
+            ["Historic site"] = new("b22f4342-9b18-fd33-975b-304ecdef8895"),
+            ["Conflict"] = new("fa9e1d22-205a-d852-b0dc-9509ec4e3164"),
+            ["Culture"] = new("f1947f79-fdfb-8046-1509-59ca09cdd05c"),
+            ["Industry"] = new("14d24f98-ae39-d299-0b27-77a4dcfb7211"),
+            ["Transport"] = new("6694ea80-7500-1f66-28da-20f1afdafc74"),
+            ["Disaster"] = new("6af308d5-ad70-1d4b-9fe0-b567c2786755"),
+        };
+
+    public static readonly Tag[] SystemTags = CreateSystemTags();
+
+    private static Tag[] CreateSystemTags()
+    {
+        var names = LoadSystemTagNames();
+        var tags = new Tag[names.Length];
+        for (var i = 0; i < names.Length; i++)
         {
-            TagId = new Guid("fa9e1d22-205a-d852-b0dc-9509ec4e3164"),
-            Name = "Conflict",
-            NormalizedName = "conflict",
-            IsSystem = true,
-            CreatedUtc = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
-        },
-        new()
+            var name = names[i];
+            if (!SystemTagIds.TryGetValue(name, out var tagId))
+            {
+                throw new InvalidOperationException(
+                    $"System tag '{name}' from Seeding/system-tags.json has no stable TagId.");
+            }
+
+            tags[i] = new Tag
+            {
+                TagId = tagId,
+                Name = name,
+                NormalizedName = name.ToLowerInvariant(),
+                IsSystem = true,
+                CreatedUtc = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            };
+        }
+
+        return tags;
+    }
+
+    private static string[] LoadSystemTagNames()
+    {
+        const string resourceName = "ReMind.Data.Seeding.system-tags.json";
+        using var stream = typeof(ReMindSeedData).Assembly.GetManifestResourceStream(resourceName)
+            ?? throw new InvalidOperationException($"Embedded resource '{resourceName}' was not found.");
+        var names = JsonSerializer.Deserialize<string[]>(stream)
+            ?? throw new InvalidOperationException("Seeding/system-tags.json did not contain a tag list.");
+        if (names.Length == 0 || names.Any(string.IsNullOrWhiteSpace) || names.Distinct(StringComparer.Ordinal).Count() != names.Length)
         {
-            TagId = new Guid("f1947f79-fdfb-8046-1509-59ca09cdd05c"),
-            Name = "Culture",
-            NormalizedName = "culture",
-            IsSystem = true,
-            CreatedUtc = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
-        },
-        new()
-        {
-            TagId = new Guid("14d24f98-ae39-d299-0b27-77a4dcfb7211"),
-            Name = "Industry",
-            NormalizedName = "industry",
-            IsSystem = true,
-            CreatedUtc = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
-        },
-        new()
-        {
-            TagId = new Guid("6694ea80-7500-1f66-28da-20f1afdafc74"),
-            Name = "Transport",
-            NormalizedName = "transport",
-            IsSystem = true,
-            CreatedUtc = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
-        },
-        new()
-        {
-            TagId = new Guid("6af308d5-ad70-1d4b-9fe0-b567c2786755"),
-            Name = "Disaster",
-            NormalizedName = "disaster",
-            IsSystem = true,
-            CreatedUtc = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
-        },
-    ];
+            throw new InvalidOperationException("Seeding/system-tags.json must contain unique, non-empty tag names.");
+        }
+
+        return names;
+    }
 }
 
 public sealed class User

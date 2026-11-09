@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using ReMind.Data;
 
@@ -5,6 +6,21 @@ namespace ReMind.IntegrationTests;
 
 public class SeedAndFilterTests
 {
+    [Fact]
+    public void SystemTagsMatchSeedCatalogFile()
+    {
+        var jsonPath = Path.Combine(AppContext.BaseDirectory, "Seeding", "system-tags.json");
+        var names = JsonSerializer.Deserialize<string[]>(File.ReadAllText(jsonPath));
+
+        Assert.NotNull(names);
+        Assert.Equal(names, ReMindSeedData.SystemTags.Select(tag => tag.Name));
+        Assert.All(ReMindSeedData.SystemTags, tag =>
+        {
+            Assert.True(tag.IsSystem);
+            Assert.Equal(tag.Name.ToLowerInvariant(), tag.NormalizedName);
+        });
+    }
+
     [Fact]
     public void ConstructorMaterializesSeedsForFreshInMemoryDatabase()
     {
