@@ -13,6 +13,7 @@ public class SeedAndFilterTests
             .Options;
 
         using var db = new ReMindDbContext(options);
+        db.Database.EnsureCreated();
 
         Assert.Equal(6, db.Tags.Count());
         Assert.Equal("Historic site", db.Tags.Single(t => t.TagId == new Guid("b22f4342-9b18-fd33-975b-304ecdef8895")).Name);

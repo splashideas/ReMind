@@ -181,7 +181,9 @@ namespace ReMind.Data.Migrations
                         .HasColumnType("datetimeoffset");
 
                     b.Property<bool>("IsDeleted")
-                        .HasColumnType("bit");
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
 
                     b.Property<Point>("Location")
                         .IsRequired()
@@ -204,11 +206,12 @@ namespace ReMind.Data.Migrations
                     b.HasKey("DataPointId");
 
                     b.HasIndex("ChainId", "EventDate", "DataPointId")
+                        .IsDescending(false, true, true)
                         .HasDatabaseName("IX_DataPoints_Chain_EventDate")
                         .HasFilter("IsDeleted = 0 AND ChainId IS NOT NULL");
 
                     b.HasIndex("UserId", "CreatedUtc", "DataPointId")
-                        .IsDescending(false, true, false)
+                        .IsDescending(false, true, true)
                         .HasDatabaseName("IX_DataPoints_User_CreatedUtc")
                         .HasFilter("IsDeleted = 0");
 
@@ -444,6 +447,8 @@ namespace ReMind.Data.Migrations
                     b.HasIndex("Status", "CreatedUtc", "MediaId")
                         .HasDatabaseName("IX_Media_Status_CreatedUtc");
 
+                    SqlServerIndexBuilderExtensions.IncludeProperties(b.HasIndex("Status", "CreatedUtc", "MediaId"), new[] { "DataPointId", "OwnerUserId", "UploadId", "ThumbnailPath", "MalwareScanVerdict", "QuarantineReviewByUtc", "RejectedUtc" });
+
                     b.ToTable("Media", null, t =>
                         {
                             t.HasCheckConstraint("CK_Media_RejectedUtc_Matches_Status", "(Status = 5 AND RejectedUtc IS NOT NULL) OR (Status <> 5 AND RejectedUtc IS NULL)");
@@ -493,6 +498,8 @@ namespace ReMind.Data.Migrations
                     b.HasIndex("CreatedUtc", "OutboxId")
                         .HasDatabaseName("IX_OutboxMessages_Unprocessed")
                         .HasFilter("ProcessedUtc IS NULL");
+
+                    SqlServerIndexBuilderExtensions.IncludeProperties(b.HasIndex("CreatedUtc", "OutboxId"), new[] { "Type", "DedupKey", "Attempts" });
 
                     b.ToTable("OutboxMessages", (string)null);
                 });
@@ -566,6 +573,8 @@ namespace ReMind.Data.Migrations
                     b.HasIndex("Status", "CreatedUtc", "ReportId")
                         .HasDatabaseName("IX_Reports_Status_CreatedUtc");
 
+                    SqlServerIndexBuilderExtensions.IncludeProperties(b.HasIndex("Status", "CreatedUtc", "ReportId"), new[] { "ReporterId", "DataPointId", "CommentId" });
+
                     b.ToTable("Reports", null, t =>
                         {
                             t.HasCheckConstraint("CK_Reports_OneTarget", "(DataPointId IS NOT NULL AND CommentId IS NULL) OR (DataPointId IS NULL AND CommentId IS NOT NULL)");
@@ -587,7 +596,9 @@ namespace ReMind.Data.Migrations
                         .HasDefaultValueSql("SYSUTCDATETIME()");
 
                     b.Property<bool>("IsSystem")
-                        .HasColumnType("bit");
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
 
                     b.Property<string>("Name")
                         .IsRequired()
@@ -607,6 +618,56 @@ namespace ReMind.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("Tags", (string)null);
+
+                    b.HasData(
+                        new
+                        {
+                            TagId = new Guid("b22f4342-9b18-fd33-975b-304ecdef8895"),
+                            CreatedUtc = new DateTime(2024, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsSystem = true,
+                            Name = "Historic site",
+                            NormalizedName = "historic site"
+                        },
+                        new
+                        {
+                            TagId = new Guid("fa9e1d22-205a-d852-b0dc-9509ec4e3164"),
+                            CreatedUtc = new DateTime(2024, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsSystem = true,
+                            Name = "Conflict",
+                            NormalizedName = "conflict"
+                        },
+                        new
+                        {
+                            TagId = new Guid("f1947f79-fdfb-8046-1509-59ca09cdd05c"),
+                            CreatedUtc = new DateTime(2024, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsSystem = true,
+                            Name = "Culture",
+                            NormalizedName = "culture"
+                        },
+                        new
+                        {
+                            TagId = new Guid("14d24f98-ae39-d299-0b27-77a4dcfb7211"),
+                            CreatedUtc = new DateTime(2024, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsSystem = true,
+                            Name = "Industry",
+                            NormalizedName = "industry"
+                        },
+                        new
+                        {
+                            TagId = new Guid("6694ea80-7500-1f66-28da-20f1afdafc74"),
+                            CreatedUtc = new DateTime(2024, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsSystem = true,
+                            Name = "Transport",
+                            NormalizedName = "transport"
+                        },
+                        new
+                        {
+                            TagId = new Guid("6af308d5-ad70-1d4b-9fe0-b567c2786755"),
+                            CreatedUtc = new DateTime(2024, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsSystem = true,
+                            Name = "Disaster",
+                            NormalizedName = "disaster"
+                        });
                 });
 
             modelBuilder.Entity("ReMind.Data.User", b =>
@@ -660,6 +721,17 @@ namespace ReMind.Data.Migrations
                     b.ToTable("Users", null, t =>
                         {
                             t.HasCheckConstraint("CK_Users_PendingReservedBytes_NonNegative", "PendingReservedBytes >= 0");
+                        });
+
+                    b.HasData(
+                        new
+                        {
+                            UserId = new Guid("0d0f89d2-40db-47b1-b1ae-6ff9a4f14092"),
+                            CreatedUtc = new DateTime(2024, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayName = "System Tombstone",
+                            ExternalSubject = "00000000-0000-0000-0000-000000000000",
+                            Issuer = "__remind_tombstone__",
+                            PendingReservedBytes = 0L
                         });
                 });
 

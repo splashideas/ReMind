@@ -4,6 +4,8 @@ using NetTopologySuite.Geometries;
 
 #nullable disable
 
+#pragma warning disable CA1814 // Prefer jagged arrays over multidimensional
+
 namespace ReMind.Data.Migrations
 {
     /// <inheritdoc />
@@ -192,7 +194,7 @@ namespace ReMind.Data.Migrations
                     TagId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
                     Name = table.Column<string>(type: "nvarchar(100)", maxLength: 100, nullable: false),
                     NormalizedName = table.Column<string>(type: "nvarchar(100)", maxLength: 100, nullable: false),
-                    IsSystem = table.Column<bool>(type: "bit", nullable: false),
+                    IsSystem = table.Column<bool>(type: "bit", nullable: false, defaultValue: false),
                     CreatedByUserId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
                     CreatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false, defaultValueSql: "SYSUTCDATETIME()")
                 },
@@ -270,7 +272,7 @@ namespace ReMind.Data.Migrations
                     CreatedUtc = table.Column<DateTime>(type: "datetime2", nullable: false, defaultValueSql: "SYSUTCDATETIME()"),
                     UpdatedUtc = table.Column<DateTime>(type: "datetime2", nullable: true),
                     Visibility = table.Column<byte>(type: "tinyint", nullable: false),
-                    IsDeleted = table.Column<bool>(type: "bit", nullable: false)
+                    IsDeleted = table.Column<bool>(type: "bit", nullable: false, defaultValue: false)
                 },
                 constraints: table =>
                 {
@@ -447,6 +449,24 @@ namespace ReMind.Data.Migrations
                         principalColumn: "UserId");
                 });
 
+            migrationBuilder.InsertData(
+                table: "Tags",
+                columns: new[] { "TagId", "CreatedByUserId", "CreatedUtc", "IsSystem", "Name", "NormalizedName" },
+                values: new object[,]
+                {
+                    { new Guid("14d24f98-ae39-d299-0b27-77a4dcfb7211"), null, new DateTime(2024, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc), true, "Industry", "industry" },
+                    { new Guid("6694ea80-7500-1f66-28da-20f1afdafc74"), null, new DateTime(2024, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc), true, "Transport", "transport" },
+                    { new Guid("6af308d5-ad70-1d4b-9fe0-b567c2786755"), null, new DateTime(2024, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc), true, "Disaster", "disaster" },
+                    { new Guid("b22f4342-9b18-fd33-975b-304ecdef8895"), null, new DateTime(2024, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc), true, "Historic site", "historic site" },
+                    { new Guid("f1947f79-fdfb-8046-1509-59ca09cdd05c"), null, new DateTime(2024, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc), true, "Culture", "culture" },
+                    { new Guid("fa9e1d22-205a-d852-b0dc-9509ec4e3164"), null, new DateTime(2024, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc), true, "Conflict", "conflict" }
+                });
+
+            migrationBuilder.InsertData(
+                table: "Users",
+                columns: new[] { "UserId", "AvatarBlobPath", "Bio", "CreatedUtc", "DeletedUtc", "DisplayName", "ExternalSubject", "Issuer" },
+                values: new object[] { new Guid("0d0f89d2-40db-47b1-b1ae-6ff9a4f14092"), null, null, new DateTime(2024, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc), null, "System Tombstone", "00000000-0000-0000-0000-000000000000", "__remind_tombstone__" });
+
             migrationBuilder.CreateIndex(
                 name: "IX_AvatarUploads_Owner_Status_Expires",
                 table: "AvatarUploads",
@@ -489,13 +509,14 @@ namespace ReMind.Data.Migrations
                 name: "IX_DataPoints_Chain_EventDate",
                 table: "DataPoints",
                 columns: new[] { "ChainId", "EventDate", "DataPointId" },
+                descending: new[] { false, true, true },
                 filter: "IsDeleted = 0 AND ChainId IS NOT NULL");
 
             migrationBuilder.CreateIndex(
                 name: "IX_DataPoints_User_CreatedUtc",
                 table: "DataPoints",
                 columns: new[] { "UserId", "CreatedUtc", "DataPointId" },
-                descending: new[] { false, true, false },
+                descending: new[] { false, true, true },
                 filter: "IsDeleted = 0");
 
             migrationBuilder.CreateIndex(
@@ -538,7 +559,8 @@ namespace ReMind.Data.Migrations
             migrationBuilder.CreateIndex(
                 name: "IX_Media_Status_CreatedUtc",
                 table: "Media",
-                columns: new[] { "Status", "CreatedUtc", "MediaId" });
+                columns: new[] { "Status", "CreatedUtc", "MediaId" })
+                .Annotation("SqlServer:Include", new[] { "DataPointId", "OwnerUserId", "UploadId", "ThumbnailPath", "MalwareScanVerdict", "QuarantineReviewByUtc", "RejectedUtc" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_Media_UploadId",
@@ -556,7 +578,8 @@ namespace ReMind.Data.Migrations
                 name: "IX_OutboxMessages_Unprocessed",
                 table: "OutboxMessages",
                 columns: new[] { "CreatedUtc", "OutboxId" },
-                filter: "ProcessedUtc IS NULL");
+                filter: "ProcessedUtc IS NULL")
+                .Annotation("SqlServer:Include", new[] { "Type", "DedupKey", "Attempts" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_Reactions_DataPointId_UserId",
@@ -587,7 +610,8 @@ namespace ReMind.Data.Migrations
             migrationBuilder.CreateIndex(
                 name: "IX_Reports_Status_CreatedUtc",
                 table: "Reports",
-                columns: new[] { "Status", "CreatedUtc", "ReportId" });
+                columns: new[] { "Status", "CreatedUtc", "ReportId" })
+                .Annotation("SqlServer:Include", new[] { "ReporterId", "DataPointId", "CommentId" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_Tags_CreatedByUserId",
