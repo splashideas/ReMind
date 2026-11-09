@@ -525,7 +525,16 @@ internal sealed class MediaConfiguration : IEntityTypeConfiguration<Media>
         builder.HasIndex(x => new { x.DataPointId, x.CanonicalBlobPath }).IsUnique();
         builder.HasCheckConstraint("CK_Media_Requested_Within_Reserved", "RequestedSizeBytes > 0 AND RequestedSizeBytes <= ReservedBytes");
         builder.HasCheckConstraint("CK_Media_RejectedUtc_Matches_Status", "(Status = 5 AND RejectedUtc IS NOT NULL) OR (Status <> 5 AND RejectedUtc IS NULL)");
-        builder.HasIndex(x => new { x.Status, x.CreatedUtc, x.MediaId }).HasDatabaseName("IX_Media_Status_CreatedUtc");
+        builder.HasIndex(x => new { x.Status, x.CreatedUtc, x.MediaId })
+            .HasDatabaseName("IX_Media_Status_CreatedUtc")
+            .IncludeProperties(
+                nameof(Media.DataPointId),
+                nameof(Media.OwnerUserId),
+                nameof(Media.UploadId),
+                nameof(Media.ThumbnailPath),
+                nameof(Media.MalwareScanVerdict),
+                nameof(Media.QuarantineReviewByUtc),
+                nameof(Media.RejectedUtc));
         builder.HasOne(x => x.DataPoint).WithMany().HasForeignKey(x => x.DataPointId).OnDelete(DeleteBehavior.NoAction);
         builder.HasOne(x => x.Owner).WithMany().HasForeignKey(x => x.OwnerUserId).OnDelete(DeleteBehavior.NoAction);
     }
@@ -543,7 +552,13 @@ internal sealed class OutboxMessageConfiguration : IEntityTypeConfiguration<Outb
         builder.Property(x => x.CreatedUtc).HasDefaultValueSql("SYSUTCDATETIME()");
         builder.Property(x => x.Attempts).HasDefaultValue(0);
         builder.HasIndex(x => x.DedupKey).IsUnique();
-        builder.HasIndex(x => new { x.CreatedUtc, x.OutboxId }).HasFilter("ProcessedUtc IS NULL").HasDatabaseName("IX_OutboxMessages_Unprocessed");
+        builder.HasIndex(x => new { x.CreatedUtc, x.OutboxId })
+            .HasFilter("ProcessedUtc IS NULL")
+            .HasDatabaseName("IX_OutboxMessages_Unprocessed")
+            .IncludeProperties(
+                nameof(OutboxMessage.Type),
+                nameof(OutboxMessage.DedupKey),
+                nameof(OutboxMessage.Attempts));
     }
 }
 
@@ -599,7 +614,12 @@ internal sealed class ReportConfiguration : IEntityTypeConfiguration<Report>
         builder.Property(x => x.Reason).HasMaxLength(500).IsRequired();
         builder.Property(x => x.CreatedUtc).HasDefaultValueSql("SYSUTCDATETIME()");
         builder.HasCheckConstraint("CK_Reports_OneTarget", "(DataPointId IS NOT NULL AND CommentId IS NULL) OR (DataPointId IS NULL AND CommentId IS NOT NULL)");
-        builder.HasIndex(x => new { x.Status, x.CreatedUtc, x.ReportId }).HasDatabaseName("IX_Reports_Status_CreatedUtc");
+        builder.HasIndex(x => new { x.Status, x.CreatedUtc, x.ReportId })
+            .HasDatabaseName("IX_Reports_Status_CreatedUtc")
+            .IncludeProperties(
+                nameof(Report.ReporterId),
+                nameof(Report.DataPointId),
+                nameof(Report.CommentId));
         builder.HasOne(x => x.Reporter).WithMany().HasForeignKey(x => x.ReporterId).OnDelete(DeleteBehavior.NoAction);
         builder.HasOne(x => x.DataPoint).WithMany().HasForeignKey(x => x.DataPointId).OnDelete(DeleteBehavior.NoAction);
         builder.HasOne(x => x.Comment).WithMany().HasForeignKey(x => x.CommentId).OnDelete(DeleteBehavior.NoAction);
