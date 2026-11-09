@@ -9,7 +9,15 @@ public class SeedAndFilterTests
     [Fact]
     public void SystemTagsMatchSeedCatalogFile()
     {
-        var jsonPath = Path.Combine(AppContext.BaseDirectory, "Seeding", "system-tags.json");
+        var seedingDirectory = "Seeding";
+        var systemTagsFileName = "system-tags.json";
+
+        if (Path.IsPathRooted(seedingDirectory) || Path.IsPathRooted(systemTagsFileName))
+        {
+            throw new InvalidOperationException("Path segments for seeded test data must be relative.");
+        }
+
+        var jsonPath = Path.Combine(AppContext.BaseDirectory, seedingDirectory, systemTagsFileName);
         var names = JsonSerializer.Deserialize<string[]>(File.ReadAllText(jsonPath));
 
         Assert.NotNull(names);
