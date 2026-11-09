@@ -48,8 +48,8 @@ public static class ReMindSeedData
     public static readonly User TombstoneUser = new()
     {
         UserId = TombstoneUserId,
-        Issuer = "system",
-        ExternalSubject = "tombstone",
+        Issuer = "__remind_tombstone__",
+        ExternalSubject = "00000000-0000-0000-0000-000000000000",
         DisplayName = "System Tombstone",
         PendingReservedBytes = 0,
         CreatedUtc = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
