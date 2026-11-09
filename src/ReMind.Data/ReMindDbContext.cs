@@ -7,10 +7,6 @@ public sealed class ReMindDbContext : DbContext
     public ReMindDbContext(DbContextOptions<ReMindDbContext> options)
         : base(options)
     {
-        if (string.Equals(Database.ProviderName, "Microsoft.EntityFrameworkCore.InMemory", StringComparison.Ordinal))
-        {
-            Database.EnsureCreated();
-        }
     }
 
     public DbSet<User> Users => Set<User>();
