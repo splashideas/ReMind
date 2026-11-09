@@ -74,4 +74,18 @@ public class SeedAndFilterTests
         Assert.Equal(1, db.Comments.Count());
         Assert.Equal(2, db.Comments.IgnoreQueryFilters().Count());
     }
+
+    [Fact]
+    public void ConstructorMaterializesSeedsWithoutExplicitEnsureCreated()
+    {
+        var options = new DbContextOptionsBuilder<ReMindDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new ReMindDbContext(options);
+
+        Assert.Equal(6, db.Tags.Count());
+        Assert.Equal("Historic site", db.Tags.Single(t => t.TagId == new Guid("b22f4342-9b18-fd33-975b-304ecdef8895")).Name);
+        Assert.Equal(ReMindSeedData.TombstoneUserId, db.Users.Single(u => u.UserId == ReMindSeedData.TombstoneUserId).UserId);
+    }
 }

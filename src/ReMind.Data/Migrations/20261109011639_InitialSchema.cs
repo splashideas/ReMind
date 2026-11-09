@@ -643,9 +643,12 @@ namespace ReMind.Data.Migrations
             // Drift from §2 ON DELETE SET NULL: SQL Server rejects that self-referencing
             // cascading action (error 1785). The FK is NO ACTION; this trigger preserves
             // the SET NULL outcome in the same statement.
+            // EXEC keeps CREATE TRIGGER as the first statement of its own batch.
+            // Idempotent scripts wrap migrationBuilder.Sql in IF NOT EXISTS ... BEGIN/END,
+            // which SQL Server rejects for a bare CREATE TRIGGER.
             migrationBuilder.Sql(
                 """
-                CREATE TRIGGER TR_Comments_NullParentOnDelete
+                EXEC(N'CREATE TRIGGER TR_Comments_NullParentOnDelete
                 ON dbo.Comments
                 INSTEAD OF DELETE
                 AS
@@ -660,7 +663,7 @@ namespace ReMind.Data.Migrations
                     DELETE target
                     FROM dbo.Comments AS target
                     INNER JOIN deleted AS removed ON target.CommentId = removed.CommentId;
-                END;
+                END;');
                 """);
         }
 
