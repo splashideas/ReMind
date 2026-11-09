@@ -44,7 +44,7 @@ jobs:
           npm test
 
   dotnet-build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -94,3 +94,4 @@ jobs:
           file: Cobertura.xml
           language: C#
           label: code-coverage-agent
+          fail-on-error: false
