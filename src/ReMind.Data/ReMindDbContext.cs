@@ -45,7 +45,11 @@ public sealed class ReMindDbContext : DbContext
 
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(ReMindDbContext).Assembly);
 
+        // Admin queries must explicitly call IgnoreQueryFilters() when they need deleted rows.
         modelBuilder.Entity<DataPoint>().HasQueryFilter(dataPoint => !dataPoint.IsDeleted);
         modelBuilder.Entity<Comment>().HasQueryFilter(comment => !comment.IsDeleted);
+
+        modelBuilder.Entity<User>().HasData(ReMindSeedData.TombstoneUser);
+        modelBuilder.Entity<Tag>().HasData(ReMindSeedData.SystemTags);
     }
 }

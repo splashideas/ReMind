@@ -41,6 +41,73 @@ public enum UserExportStatus : byte
     Failed = 3,
 }
 
+public static class ReMindSeedData
+{
+    public static readonly Guid TombstoneUserId = new("0d0f89d2-40db-47b1-b1ae-6ff9a4f14092");
+
+    public static readonly User TombstoneUser = new()
+    {
+        UserId = TombstoneUserId,
+        Issuer = "system",
+        ExternalSubject = "tombstone",
+        DisplayName = "System Tombstone",
+        PendingReservedBytes = 0,
+        CreatedUtc = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+    };
+
+    public static readonly Tag[] SystemTags =
+    [
+        new()
+        {
+            TagId = new Guid("b22f4342-9b18-fd33-975b-304ecdef8895"),
+            Name = "Historic site",
+            NormalizedName = "historic site",
+            IsSystem = true,
+            CreatedUtc = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+        },
+        new()
+        {
+            TagId = new Guid("fa9e1d22-205a-d852-b0dc-9509ec4e3164"),
+            Name = "Conflict",
+            NormalizedName = "conflict",
+            IsSystem = true,
+            CreatedUtc = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+        },
+        new()
+        {
+            TagId = new Guid("f1947f79-fdfb-8046-1509-59ca09cdd05c"),
+            Name = "Culture",
+            NormalizedName = "culture",
+            IsSystem = true,
+            CreatedUtc = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+        },
+        new()
+        {
+            TagId = new Guid("14d24f98-ae39-d299-0b27-77a4dcfb7211"),
+            Name = "Industry",
+            NormalizedName = "industry",
+            IsSystem = true,
+            CreatedUtc = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+        },
+        new()
+        {
+            TagId = new Guid("6694ea80-7500-1f66-28da-20f1afdafc74"),
+            Name = "Transport",
+            NormalizedName = "transport",
+            IsSystem = true,
+            CreatedUtc = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+        },
+        new()
+        {
+            TagId = new Guid("6af308d5-ad70-1d4b-9fe0-b567c2786755"),
+            Name = "Disaster",
+            NormalizedName = "disaster",
+            IsSystem = true,
+            CreatedUtc = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+        },
+    ];
+}
+
 public sealed class User
 {
     public Guid UserId { get; set; }
