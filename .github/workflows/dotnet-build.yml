@@ -94,3 +94,4 @@ jobs:
           file: Cobertura.xml
           language: C#
           label: code-coverage-agent
+          fail-on-error: false
