@@ -404,9 +404,10 @@ internal sealed class DataPointConfiguration : IEntityTypeConfiguration<DataPoin
         builder.Property(x => x.Location).HasColumnType("geography").IsRequired();
         builder.Property(x => x.CreatedUtc).HasDefaultValueSql("SYSUTCDATETIME()");
         builder.Property(x => x.UpdatedUtc).IsRequired(false);
+        builder.Property(x => x.IsDeleted).HasDefaultValue(false);
         builder.HasCheckConstraint("CK_DataPoints_Location_SRID", "Location.STSrid = 4326");
-        builder.HasIndex(x => new { x.ChainId, x.EventDate, x.DataPointId }).HasFilter("IsDeleted = 0 AND ChainId IS NOT NULL").HasDatabaseName("IX_DataPoints_Chain_EventDate").IsDescending(false, false, false);
-        builder.HasIndex(x => new { x.UserId, x.CreatedUtc, x.DataPointId }).HasFilter("IsDeleted = 0").HasDatabaseName("IX_DataPoints_User_CreatedUtc").IsDescending(false, true, false);
+        builder.HasIndex(x => new { x.ChainId, x.EventDate, x.DataPointId }).HasFilter("IsDeleted = 0 AND ChainId IS NOT NULL").HasDatabaseName("IX_DataPoints_Chain_EventDate").IsDescending(false, true, true);
+        builder.HasIndex(x => new { x.UserId, x.CreatedUtc, x.DataPointId }).HasFilter("IsDeleted = 0").HasDatabaseName("IX_DataPoints_User_CreatedUtc").IsDescending(false, true, true);
         builder.HasCheckConstraint("CK_DataPoints_Location_SRID", "Location.STSrid = 4326");
         builder.HasCheckConstraint("CK_DataPoints_Visibility", "Visibility IN (0, 1, 2)");
         builder.HasOne(x => x.User).WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.NoAction);
@@ -423,6 +424,7 @@ internal sealed class TagConfiguration : IEntityTypeConfiguration<Tag>
         builder.HasKey(x => x.TagId);
         builder.Property(x => x.Name).HasMaxLength(100).IsRequired();
         builder.Property(x => x.NormalizedName).HasMaxLength(100).IsRequired();
+        builder.Property(x => x.IsSystem).HasDefaultValue(false);
         builder.Property(x => x.CreatedUtc).HasDefaultValueSql("SYSUTCDATETIME()");
         builder.HasIndex(x => x.NormalizedName).IsUnique();
         builder.HasOne(x => x.CreatedBy).WithMany().HasForeignKey(x => x.CreatedByUserId).OnDelete(DeleteBehavior.NoAction);
