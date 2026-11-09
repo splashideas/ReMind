@@ -580,14 +580,16 @@ internal sealed class CommentConfiguration : IEntityTypeConfiguration<Comment>
 {
     public void Configure(EntityTypeBuilder<Comment> builder)
     {
-        builder.ToTable("Comments");
+        // SQL Server rejects self-referencing ON DELETE SET NULL (error 1785). Drift from §2:
+        // FK is NO ACTION; TR_Comments_NullParentOnDelete nulls children then deletes the parent.
+        builder.ToTable("Comments", table => table.HasTrigger("TR_Comments_NullParentOnDelete"));
         builder.HasKey(x => x.CommentId);
         builder.Property(x => x.Text).HasMaxLength(2000).IsRequired();
         builder.Property(x => x.CreatedUtc).HasDefaultValueSql("SYSUTCDATETIME()");
         builder.Property(x => x.IsDeleted).HasDefaultValue(false);
         builder.HasOne(x => x.DataPoint).WithMany().HasForeignKey(x => x.DataPointId).OnDelete(DeleteBehavior.NoAction);
         builder.HasOne(x => x.User).WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.NoAction);
-        builder.HasOne(x => x.ParentComment).WithMany().HasForeignKey(x => x.ParentCommentId).OnDelete(DeleteBehavior.SetNull);
+        builder.HasOne(x => x.ParentComment).WithMany().HasForeignKey(x => x.ParentCommentId).OnDelete(DeleteBehavior.NoAction);
         builder.HasQueryFilter(x => !x.IsDeleted);
     }
 }

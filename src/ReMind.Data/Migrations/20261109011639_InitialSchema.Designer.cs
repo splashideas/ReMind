@@ -156,7 +156,12 @@ namespace ReMind.Data.Migrations
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("Comments", (string)null);
+                    b.ToTable("Comments", null, t =>
+                        {
+                            t.HasTrigger("TR_Comments_NullParentOnDelete");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
                 });
 
             modelBuilder.Entity("ReMind.Data.DataPoint", b =>
@@ -886,7 +891,7 @@ namespace ReMind.Data.Migrations
                     b.HasOne("ReMind.Data.Comment", "ParentComment")
                         .WithMany()
                         .HasForeignKey("ParentCommentId")
-                        .OnDelete(DeleteBehavior.SetNull);
+                        .OnDelete(DeleteBehavior.NoAction);
 
                     b.HasOne("ReMind.Data.User", "User")
                         .WithMany()

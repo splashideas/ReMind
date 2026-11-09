@@ -310,8 +310,7 @@ namespace ReMind.Data.Migrations
                         name: "FK_Comments_Comments_ParentCommentId",
                         column: x => x.ParentCommentId,
                         principalTable: "Comments",
-                        principalColumn: "CommentId",
-                        onDelete: ReferentialAction.SetNull);
+                        principalColumn: "CommentId");
                     table.ForeignKey(
                         name: "FK_Comments_DataPoints_DataPointId",
                         column: x => x.DataPointId,
@@ -640,11 +639,36 @@ namespace ReMind.Data.Migrations
                 table: "Users",
                 columns: new[] { "Issuer", "ExternalSubject" },
                 unique: true);
+
+            // Drift from §2 ON DELETE SET NULL: SQL Server rejects that self-referencing
+            // cascading action (error 1785). The FK is NO ACTION; this trigger preserves
+            // the SET NULL outcome in the same statement.
+            migrationBuilder.Sql(
+                """
+                CREATE TRIGGER TR_Comments_NullParentOnDelete
+                ON dbo.Comments
+                INSTEAD OF DELETE
+                AS
+                BEGIN
+                    SET NOCOUNT ON;
+
+                    UPDATE child
+                    SET ParentCommentId = NULL
+                    FROM dbo.Comments AS child
+                    INNER JOIN deleted AS parent ON child.ParentCommentId = parent.CommentId;
+
+                    DELETE target
+                    FROM dbo.Comments AS target
+                    INNER JOIN deleted AS removed ON target.CommentId = removed.CommentId;
+                END;
+                """);
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.Sql("DROP TRIGGER IF EXISTS dbo.TR_Comments_NullParentOnDelete;");
+
             migrationBuilder.DropTable(
                 name: "AvatarUploads");
 
