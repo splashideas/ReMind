@@ -1,13 +1,21 @@
 using System.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using NetTopologySuite.Geometries;
 using ReMind.Data;
+using ReMind.Data.Migrations;
 
 namespace ReMind.IntegrationTests;
 
 public sealed class InitialSchemaSqlServerTests : IClassFixture<SqlServerFixture>
 {
+    private const string InitialSchemaMigrationId = "20261109011639_InitialSchema";
+    private const string HistoryRowsSql = """
+        SELECT STRING_AGG(MigrationId + '|' + ProductVersion, ',') WITHIN GROUP (ORDER BY MigrationId)
+        FROM [__EFMigrationsHistory]
+        """;
+
     private readonly SqlServerFixture _fixture;
 
     public InitialSchemaSqlServerTests(SqlServerFixture fixture) => _fixture = fixture;
@@ -17,9 +25,13 @@ public sealed class InitialSchemaSqlServerTests : IClassFixture<SqlServerFixture
     {
         var databaseName = NewDatabaseName();
         await using var db = _fixture.CreateContext(databaseName);
-        await db.Database.MigrateAsync();
+        await db.Database.MigrateAsync(InitialSchemaMigrationId);
 
         Assert.Equal(0, await ScalarAsync<int>(db, "SELECT COUNT(*) FROM sys.spatial_indexes"));
+
+        await db.Database.MigrateAsync();
+
+        Assert.Equal(1, await ScalarAsync<int>(db, "SELECT COUNT(*) FROM sys.spatial_indexes WHERE name = 'IX_DataPoints_Location'"));
         Assert.Equal(1, await ScalarAsync<int>(db, "SELECT COUNT(*) FROM sys.indexes WHERE name = 'UQ_AvatarUploads_OneLivePerOwner'"));
         Assert.Equal(
             "NO_ACTION",
@@ -122,9 +134,7 @@ public sealed class InitialSchemaSqlServerTests : IClassFixture<SqlServerFixture
             markerId = Guid.NewGuid();
             db.Users.Add(NewUser(markerId));
             await db.SaveChangesAsync();
-            historyBefore = await ScalarAsync<string>(
-                db,
-                "SELECT MigrationId + '|' + ProductVersion FROM [__EFMigrationsHistory]");
+            historyBefore = await ScalarAsync<string>(db, HistoryRowsSql);
             tagCountBefore = await db.Tags.CountAsync();
             userCountBefore = await db.Users.CountAsync();
         }
@@ -133,10 +143,8 @@ public sealed class InitialSchemaSqlServerTests : IClassFixture<SqlServerFixture
         {
             await db.Database.MigrateAsync();
 
-            Assert.Equal(historyBefore, await ScalarAsync<string>(
-                db,
-                "SELECT MigrationId + '|' + ProductVersion FROM [__EFMigrationsHistory]"));
-            Assert.Equal(1, await ScalarAsync<int>(db, "SELECT COUNT(*) FROM [__EFMigrationsHistory]"));
+            Assert.Equal(historyBefore, await ScalarAsync<string>(db, HistoryRowsSql));
+            Assert.Equal(2, await ScalarAsync<int>(db, "SELECT COUNT(*) FROM [__EFMigrationsHistory]"));
             Assert.Equal(tagCountBefore, await db.Tags.CountAsync());
             Assert.Equal(userCountBefore, await db.Users.CountAsync());
             Assert.Equal(6, await db.Tags.CountAsync(tag => tag.IsSystem));
@@ -183,6 +191,113 @@ public sealed class InitialSchemaSqlServerTests : IClassFixture<SqlServerFixture
             Assert.Null(child.ParentCommentId);
             Assert.False(await db.Comments.IgnoreQueryFilters().AnyAsync(comment => comment.CommentId == parentId));
         }
+    }
+
+    [Fact]
+    public async Task SpatialMigrationCreatesLocationIndex()
+    {
+        var databaseName = NewDatabaseName();
+        await using var db = _fixture.CreateContext(databaseName);
+        await db.Database.MigrateAsync();
+
+        Assert.Equal(
+            1,
+            await ScalarAsync<int>(
+                db,
+                "SELECT COUNT(*) FROM sys.spatial_indexes WHERE name = 'IX_DataPoints_Location'"));
+        Assert.Equal(
+            "dbo",
+            await ScalarAsync<string>(
+                db,
+                """
+                SELECT s.name
+                FROM sys.spatial_indexes AS i
+                INNER JOIN sys.tables AS t ON i.object_id = t.object_id
+                INNER JOIN sys.schemas AS s ON t.schema_id = s.schema_id
+                WHERE i.name = 'IX_DataPoints_Location'
+                """));
+        Assert.Equal(
+            "DataPoints",
+            await ScalarAsync<string>(
+                db,
+                """
+                SELECT t.name
+                FROM sys.spatial_indexes AS i
+                INNER JOIN sys.tables AS t ON i.object_id = t.object_id
+                WHERE i.name = 'IX_DataPoints_Location'
+                """));
+        Assert.Equal(
+            "Location",
+            await ScalarAsync<string>(
+                db,
+                """
+                SELECT c.name
+                FROM sys.spatial_indexes AS i
+                INNER JOIN sys.index_columns AS ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+                INNER JOIN sys.columns AS c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+                WHERE i.name = 'IX_DataPoints_Location'
+                """));
+        Assert.Equal(
+            "GEOGRAPHY_AUTO_GRID",
+            await ScalarAsync<string>(
+                db,
+                "SELECT tessellation_scheme FROM sys.spatial_indexes WHERE name = 'IX_DataPoints_Location'"));
+    }
+
+    [Fact]
+    public async Task SpatialMigrationSqlCanBeReplayedWithoutThrowing()
+    {
+        var migration = new AddDataPointsLocationSpatialIndex();
+        var create = Assert.IsType<SqlOperation>(Assert.Single(migration.UpOperations));
+        Assert.True(create.SuppressTransaction);
+        Assert.Contains("IX_DataPoints_Location", create.Sql, StringComparison.Ordinal);
+        Assert.Contains("GEOGRAPHY_AUTO_GRID", create.Sql, StringComparison.Ordinal);
+        Assert.Contains("sys.spatial_indexes", create.Sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("CREATE TABLE", create.Sql, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("BEGIN TRAN", create.Sql, StringComparison.OrdinalIgnoreCase);
+
+        var databaseName = NewDatabaseName();
+        await using var db = _fixture.CreateContext(databaseName);
+        await db.Database.MigrateAsync(InitialSchemaMigrationId);
+        Assert.Equal(0, await ScalarAsync<int>(db, "SELECT COUNT(*) FROM sys.spatial_indexes"));
+
+        await db.Database.ExecuteSqlRawAsync(create.Sql);
+        await db.Database.ExecuteSqlRawAsync(create.Sql);
+        Assert.Equal(
+            1,
+            await ScalarAsync<int>(
+                db,
+                "SELECT COUNT(*) FROM sys.spatial_indexes WHERE name = 'IX_DataPoints_Location'"));
+
+        await db.Database.MigrateAsync();
+        await db.Database.ExecuteSqlRawAsync(create.Sql);
+
+        Assert.Equal(
+            1,
+            await ScalarAsync<int>(
+                db,
+                "SELECT COUNT(*) FROM sys.spatial_indexes WHERE name = 'IX_DataPoints_Location'"));
+        Assert.Equal(2, await ScalarAsync<int>(db, "SELECT COUNT(*) FROM [__EFMigrationsHistory]"));
+        Assert.Equal(
+            1,
+            await ScalarAsync<int>(
+                db,
+                "SELECT COUNT(*) FROM [__EFMigrationsHistory] WHERE MigrationId = '20261111235036_AddDataPointsLocationSpatialIndex'"));
+    }
+
+    [Fact]
+    public async Task SpatialMigrationDownDropsIndexAndReapplyRestoresIt()
+    {
+        var databaseName = NewDatabaseName();
+        await using var db = _fixture.CreateContext(databaseName);
+        await db.Database.MigrateAsync();
+        Assert.Equal(1, await ScalarAsync<int>(db, "SELECT COUNT(*) FROM sys.spatial_indexes WHERE name = 'IX_DataPoints_Location'"));
+
+        await db.Database.MigrateAsync(InitialSchemaMigrationId);
+        Assert.Equal(0, await ScalarAsync<int>(db, "SELECT COUNT(*) FROM sys.spatial_indexes WHERE name = 'IX_DataPoints_Location'"));
+
+        await db.Database.MigrateAsync();
+        Assert.Equal(1, await ScalarAsync<int>(db, "SELECT COUNT(*) FROM sys.spatial_indexes WHERE name = 'IX_DataPoints_Location'"));
     }
 
     private static async Task<LegalRows> InsertOneLegalRowPerTableAsync(ReMindDbContext db)
