@@ -494,13 +494,27 @@ public sealed class SaveWorkflowFixture : IAsyncLifetime
     {
         EnsureCommandAvailable("docker", "Docker is required to run the Playwright save workflow tests.");
 
-        var containerId = (await RunDockerAsync(args)).Trim();
-        if (string.IsNullOrWhiteSpace(containerId))
+        for (var attempt = 0; ; attempt++)
         {
-            throw new InvalidOperationException($"Failed to start Docker container '{name}'.");
-        }
+            try
+            {
+                var containerId = (await RunDockerAsync(args)).Trim();
+                if (string.IsNullOrWhiteSpace(containerId))
+                {
+                    throw new InvalidOperationException($"Failed to start Docker container '{name}'.");
+                }
 
-        return containerId;
+                return containerId;
+            }
+            catch (InvalidOperationException ex) when (IsPortBindingFailure(ex))
+            {
+                await StopContainerAsync(name);
+                if (attempt >= 4)
+                {
+                    throw;
+                }
+            }
+        }
     }
 
     private static async Task StopContainerAsync(string? containerId)
